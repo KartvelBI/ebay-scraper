@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}{{ form_title }} — eBay Scraper{% endblock %}
+{% block content %}
+
+<div class="mb-4">
+  <div class="page-title">{{ form_title }}</div>
+  <div class="text-muted small">{{ form_desc }}</div>
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-6">
+    <div class="card scrape-card {{ card_class }}">
+      <div class="card-body p-4">
+        <form method="post" id="scrapeForm">
+          {{ form_fields | safe }}
+          <button type="submit" class="btn btn-primary w-100 mt-3" id="submitBtn">
+            <i class="bi bi-cloud-download me-1"></i> Start Scraping
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-body p-4">
+        <h6 class="fw-semibold mb-3"><i class="bi bi-info-circle me-1"></i>Tips</h6>
+        <ul class="text-muted small mb-0" style="line-height:1.8;">
+          {% for tip in tips %}
+          <li>{{ tip }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+document.getElementById('scrapeForm').addEventListener('submit', function () {
+  const btn = document.getElementById('submitBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Scraping… this may take a moment';
+});
+</script>
+
+{% endblock %}

@@ -1,0 +1,341 @@
+import json
+import re
+import time
+import random
+from contextlib import contextmanager
+from datetime import datetime
+from urllib.parse import urlencode
+
+from bs4 import BeautifulSoup, Tag
+from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+
+BASE_URL = "https://www.ebay.com"
+_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+# ---------------------------------------------------------------------------
+# Browser lifecycle
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def _browser_session():
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        ctx = browser.new_context(
+            user_agent=_UA,
+            viewport={"width": 1280, "height": 800},
+            locale="en-US",
+        )
+        ctx.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
+        page = ctx.new_page()
+        # Warm up — grab homepage to load cookies
+        page.goto(BASE_URL, wait_until="domcontentloaded", timeout=20000)
+        time.sleep(1.5)
+        yield page
+        browser.close()
+
+
+def _fetch(page, url: str, wait_selector: str = "li.s-card") -> BeautifulSoup | None:
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=25000)
+        try:
+            page.wait_for_selector(wait_selector, timeout=10000)
+        except PWTimeout:
+            pass  # page may still have content
+        time.sleep(random.uniform(1.0, 2.0))
+        return BeautifulSoup(page.content(), "lxml")
+    except Exception as exc:
+        print(f"  Error loading {url}: {exc}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _has_next_page(soup: BeautifulSoup) -> bool:
+    return bool(soup.select_one("a.pagination__next"))
+
+
+def _clean_url(url: str) -> str:
+    return url.split("?")[0] if url else ""
+
+
+def _parse_price(text: str) -> float | None:
+    if not text:
+        return None
+    text = text.split(" to ")[0]  # "10.00 to 20.00" → take lower bound
+    m = re.search(r"[\d,]+\.?\d*", text.replace(",", ""))
+    return float(m.group().replace(",", "")) if m else None
+
+
+def _text(el: Tag | None) -> str | None:
+    return el.get_text(strip=True) if el else None
+
+
+# ---------------------------------------------------------------------------
+# Card parser  (new eBay SRP: li.s-card)
+# ---------------------------------------------------------------------------
+
+def _parse_card(item: Tag, is_sold: bool) -> dict | None:
+    ebay_id = item.get("data-listingid")
+
+    title_el = item.select_one(".s-card__title span.su-styled-text")
+    title = _text(title_el)
+    if not title or title.strip() == "Shop on eBay":
+        return None
+    title = re.sub(r"^New Listing\s*", "", title, flags=re.IGNORECASE).strip()
+
+    link_el = item.select_one("a.s-card__link")
+    url = link_el.get("href") if link_el else None
+    if not url:
+        return None
+
+    img_el = item.select_one("img.s-card__image")
+    image_url = img_el.get("src") if img_el else None
+
+    cond_el = item.select_one(".s-card__subtitle span.su-styled-text")
+    condition = _text(cond_el)
+
+    price_el = item.select_one(".s-card__price")
+    price = _parse_price(_text(price_el))
+
+    # Sold date from caption
+    sold_date = None
+    caption_el = item.select_one(".s-card__caption span.su-styled-text")
+    if caption_el:
+        cap = _text(caption_el) or ""
+        if "Sold" in cap:
+            sold_date = cap.replace("Sold", "").strip()
+
+    # Bids and shipping from attribute rows
+    bids = None
+    shipping = None
+    for span in item.select(".s-card__attribute-row span.su-styled-text"):
+        t = _text(span) or ""
+        if bids is None and re.search(r"\bbid", t, re.IGNORECASE):
+            m = re.search(r"(\d+)", t)
+            bids = int(m.group(1)) if m else None
+        elif shipping is None and re.search(r"delivery|shipping|^free", t, re.IGNORECASE):
+            shipping = t
+
+    # Seller name (first span in the secondary attributes block)
+    seller_spans = item.select(".su-card-container__attributes__secondary span.su-styled-text")
+    seller = _text(seller_spans[0]) if seller_spans else None
+
+    return {
+        "ebay_id": ebay_id,
+        "url": _clean_url(url),
+        "title": title,
+        "price": price,
+        "currency": "USD",
+        "condition": condition,
+        "image_url": image_url,
+        "seller": seller,
+        "location": None,
+        "shipping": shipping,
+        "bids": bids,
+        "is_sold": 1 if is_sold else 0,
+        "sold_date": sold_date,
+        "scraped_at": datetime.now().isoformat(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Public scraping functions
+# ---------------------------------------------------------------------------
+
+def scrape_search(keyword: str, pages: int = 0, sold_only: bool = False) -> list[dict]:
+    """Scrape search results. pages=0 auto-paginates all available pages (up to 100)."""
+    results = []
+    auto = pages == 0
+    max_p = 100 if auto else pages
+
+    with _browser_session() as page:
+        for p in range(1, max_p + 1):
+            params: dict = {"_nkw": keyword, "_pgn": p}
+            if sold_only:
+                params["LH_Complete"] = "1"
+                params["LH_Sold"] = "1"
+            url = f"{BASE_URL}/sch/i.html?{urlencode(params)}"
+            print(f"  Page {p}: {url}")
+
+            soup = _fetch(page, url)
+            if not soup:
+                break
+
+            cards = soup.select("li.s-card")
+            if not cards:
+                print("  No listing cards found — stopping.")
+                break
+
+            for card in cards:
+                data = _parse_card(card, is_sold=sold_only)
+                if data:
+                    results.append(data)
+
+            print(f"  Collected {len(results)} listings so far.")
+
+            if auto and not _has_next_page(soup):
+                print("  Last page reached.")
+                break
+
+    return results
+
+
+def scrape_seller(seller: str, pages: int = 0) -> list[dict]:
+    """Scrape seller listings. pages=0 auto-paginates all available pages."""
+    results = []
+    auto = pages == 0
+    max_p = 100 if auto else pages
+
+    with _browser_session() as page:
+        for p in range(1, max_p + 1):
+            url = f"{BASE_URL}/sch/{seller}/m.html?_pgn={p}"
+            print(f"  Seller page {p}: {url}")
+
+            soup = _fetch(page, url)
+            if not soup:
+                break
+
+            cards = soup.select("li.s-card")
+            if not cards:
+                print("  No listing cards found — stopping.")
+                break
+
+            for card in cards:
+                data = _parse_card(card, is_sold=False)
+                if data:
+                    if not data["seller"]:
+                        data["seller"] = seller
+                    results.append(data)
+
+            print(f"  Collected {len(results)} listings so far.")
+
+            if auto and not _has_next_page(soup):
+                print("  Last page reached.")
+                break
+
+    return results
+
+
+def scrape_product(url: str) -> tuple[dict | None, dict | None]:
+    with _browser_session() as page:
+        clean = _clean_url(url)
+        print(f"  Fetching: {clean}")
+
+        try:
+            page.goto(clean, wait_until="domcontentloaded", timeout=25000)
+            time.sleep(2)
+        except Exception as exc:
+            print(f"  Error: {exc}")
+            return None, None
+
+        soup = BeautifulSoup(page.content(), "lxml")
+        ebay_id_m = re.search(r"/itm/(?:[^/]+/)?(\d+)", clean)
+        ebay_id = ebay_id_m.group(1) if ebay_id_m else None
+        now = datetime.now().isoformat()
+
+        # Title
+        title_el = (
+            soup.select_one("h1.x-item-title__mainTitle span.ux-textspans")
+            or soup.select_one("h1.x-item-title__mainTitle")
+            or soup.select_one("h1")
+        )
+        title = _text(title_el) or "Unknown"
+        title = re.sub(r"^Details about\s*\xa0?", "", title, flags=re.IGNORECASE).strip()
+
+        # Price
+        price_el = (
+            soup.select_one(".x-price-primary .ux-textspans")
+            or soup.select_one("[itemprop='price']")
+        )
+        price = _parse_price(_text(price_el))
+
+        # Condition
+        cond_el = (
+            soup.select_one(".x-item-condition-value .ux-textspans")
+            or soup.select_one("[itemprop='itemCondition']")
+        )
+        condition = _text(cond_el)
+
+        # Seller
+        seller_el = (
+            soup.select_one(".x-sellercard-atf__info__about-seller a")
+            or soup.select_one(".mbg-nw")
+        )
+        seller = _text(seller_el)
+
+        # Image
+        img_el = soup.select_one(".ux-image-carousel-item img, #icImg")
+        image_url = (img_el.get("src") or img_el.get("data-src")) if img_el else None
+
+        # Location + shipping from label-value pairs
+        location = shipping = None
+        for row in soup.select(".ux-labels-values"):
+            label = (_text(row.select_one(".ux-labels-values__labels")) or "").lower()
+            value = _text(row.select_one(".ux-labels-values__values"))
+            if "item location" in label and not location:
+                location = value
+            elif "shipping" in label and not shipping:
+                shipping = value
+
+        # Item specifics (all label→value pairs)
+        specifics: dict[str, str] = {}
+        for row in soup.select(".ux-labels-values"):
+            label = _text(row.select_one(".ux-labels-values__labels"))
+            value = _text(row.select_one(".ux-labels-values__values"))
+            if label and value:
+                specifics[label.rstrip(":")] = value
+
+        # Feedback
+        feedback_score = feedback_pct = None
+        fscore_el = soup.select_one(".x-sellercard-atf__data-item--feedback .ux-textspans")
+        if fscore_el:
+            m = re.search(r"([\d,]+)", fscore_el.get_text())
+            if m:
+                feedback_score = int(m.group(1).replace(",", ""))
+        fpct_el = soup.select_one(".x-sellercard-atf__data-item--positive .ux-textspans")
+        if fpct_el:
+            m = re.search(r"([\d.]+)%", fpct_el.get_text())
+            if m:
+                feedback_pct = float(m.group(1))
+
+        listing = {
+            "ebay_id": ebay_id,
+            "url": clean,
+            "title": title,
+            "price": price,
+            "currency": "USD",
+            "condition": condition,
+            "image_url": image_url,
+            "seller": seller,
+            "location": location,
+            "shipping": shipping,
+            "bids": None,
+            "is_sold": 0,
+            "sold_date": None,
+            "scraped_at": now,
+        }
+
+        detail = {
+            "listing_id": None,
+            "description": None,
+            "item_specifics": json.dumps(specifics) if specifics else None,
+            "buy_it_now_price": None,
+            "auction_end_time": None,
+            "seller_feedback_score": feedback_score,
+            "seller_feedback_percent": feedback_pct,
+            "scraped_at": now,
+        }
+
+        return listing, detail

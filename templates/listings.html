@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}All Listings — eBay Scraper{% endblock %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <div>
+    <div class="page-title">All Listings</div>
+    <div class="text-muted small">{{ total }} listing(s) in database</div>
+  </div>
+</div>
+
+<!-- Filters -->
+<div class="card mb-4">
+  <div class="card-body">
+    <form method="get" class="row g-2 align-items-end">
+      <div class="col-sm-3">
+        <label class="form-label small fw-semibold">Keyword</label>
+        <input name="keyword" class="form-control" placeholder="Search titles…" value="{{ filters.keyword or '' }}" />
+      </div>
+      <div class="col-sm-2">
+        <label class="form-label small fw-semibold">Store Name</label>
+        <input name="store_name" class="form-control" placeholder="Filter by store…" value="{{ filters.store_name or '' }}" />
+      </div>
+      <div class="col-sm-2">
+        <label class="form-label small fw-semibold">Seller</label>
+        <input name="seller" class="form-control" placeholder="Seller username" value="{{ filters.seller or '' }}" />
+      </div>
+      <div class="col-sm-2">
+        <label class="form-label small fw-semibold">Status</label>
+        <select name="status" class="form-select">
+          <option value="" {% if not filters.status %}selected{% endif %}>All</option>
+          <option value="sold" {% if filters.status == 'sold' %}selected{% endif %}>Sold only</option>
+          <option value="active" {% if filters.status == 'active' %}selected{% endif %}>Active only</option>
+        </select>
+      </div>
+      <div class="col-sm-2">
+        <label class="form-label small fw-semibold">Per page</label>
+        <select name="limit" class="form-select">
+          {% for n in [25, 50, 100] %}
+          <option value="{{ n }}" {% if filters.limit == n %}selected{% endif %}>{{ n }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-sm-1">
+        <button class="btn btn-primary w-100"><i class="bi bi-filter"></i></button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Table -->
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>Image</th>
+          <th>Title</th>
+          <th>Store</th>
+          <th>Price</th>
+          <th>Condition</th>
+          <th>Seller</th>
+          <th>Status</th>
+          <th>Scraped</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td style="width:56px;">
+            {% if row.image_url %}
+              <img src="{{ row.image_url }}" style="width:48px;height:48px;object-fit:cover;border-radius:.375rem;" />
+            {% else %}
+              <div style="width:48px;height:48px;background:#f0f2f5;border-radius:.375rem;display:flex;align-items:center;justify-content:center;">
+                <i class="bi bi-image text-muted"></i>
+              </div>
+            {% endif %}
+          </td>
+          <td style="max-width:240px;">
+            <div class="text-truncate fw-medium" title="{{ row.title }}">{{ row.title }}</div>
+            <div class="text-muted" style="font-size:.75rem;">ID: {{ row.ebay_id or '—' }}</div>
+          </td>
+          <td>
+            {% if row.store_name %}
+              <a href="/listings?store_name={{ row.store_name | urlencode }}"
+                 class="badge text-decoration-none"
+                 style="background:#ede9fe;color:#5b21b6;font-size:.75rem;font-weight:500;">
+                <i class="bi bi-shop me-1"></i>{{ row.store_name }}
+              </a>
+            {% else %}
+              <span class="text-muted small">—</span>
+            {% endif %}
+          </td>
+          <td class="fw-semibold text-success">
+            {% if row.price %}${{ "%.2f"|format(row.price) }}{% else %}<span class="text-muted">—</span>{% endif %}
+          </td>
+          <td><span class="text-muted small">{{ row.condition or '—' }}</span></td>
+          <td><span class="small">{{ row.seller or '—' }}</span></td>
+          <td>
+            {% if row.is_sold %}
+              <span class="badge badge-sold">Sold</span>
+            {% else %}
+              <span class="badge badge-active">Active</span>
+            {% endif %}
+          </td>
+          <td><span class="text-muted" style="font-size:.75rem;">{{ row.scraped_at[:10] }}</span></td>
+          <td>
+            <a href="{{ row.url }}" target="_blank" class="btn btn-sm btn-outline-secondary" title="Open on eBay">
+              <i class="bi bi-box-arrow-up-right"></i>
+            </a>
+            <a href="/listing/{{ row.id }}" class="btn btn-sm btn-outline-primary ms-1" title="View details">
+              <i class="bi bi-eye"></i>
+            </a>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="9" class="text-center text-muted py-5">
+            <i class="bi bi-inbox fs-2 d-block mb-2"></i>
+            No listings match your filters.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

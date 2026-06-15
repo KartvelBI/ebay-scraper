@@ -1,0 +1,371 @@
+import json
+import os
+
+from flask import Flask, flash, redirect, render_template, request, url_for
+
+import database as db
+import scraper as sc
+
+app = Flask(__name__)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(24)
+
+
+# ---------------------------------------------------------------------------
+# Dashboard
+# ---------------------------------------------------------------------------
+
+@app.route("/")
+def index():
+    db.init_db()
+    stats  = db.get_stats()
+    recent = db.get_recent_listings(10)
+    return render_template("index.html", stats=stats, recent=recent)
+
+
+# ---------------------------------------------------------------------------
+# Listings browser
+# ---------------------------------------------------------------------------
+
+@app.route("/listings")
+def listings():
+    db.init_db()
+    keyword    = request.args.get("keyword", "").strip()
+    seller     = request.args.get("seller", "").strip()
+    store_name = request.args.get("store_name", "").strip()
+    status     = request.args.get("status", "")
+    limit      = int(request.args.get("limit", 50))
+
+    rows, total = db.query_listings(
+        keyword=keyword or None,
+        seller=seller or None,
+        store_name=store_name or None,
+        sold_only=(status == "sold"),
+        active_only=(status == "active"),
+        limit=limit,
+    )
+    return render_template(
+        "listings.html",
+        rows=rows,
+        total=total,
+        filters={"keyword": keyword, "seller": seller, "store_name": store_name, "status": status, "limit": limit},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Listing detail
+# ---------------------------------------------------------------------------
+
+@app.route("/listing/<int:listing_id>")
+def listing_detail(listing_id):
+    db.init_db()
+    listing = db.get_listing_by_id(listing_id)
+    if not listing:
+        flash("Listing not found.", "error")
+        return redirect(url_for("listings"))
+
+    detail    = db.query_product_detail(listing_id)
+    specifics = {}
+    if detail:
+        raw = detail.get("item_specifics")
+        # Supabase JSONB returns a dict; SQLite would return a JSON string
+        if isinstance(raw, dict):
+            specifics = raw
+        elif isinstance(raw, str):
+            try:
+                specifics = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    return render_template("listing_detail.html", listing=listing, detail=detail, specifics=specifics)
+
+
+# ---------------------------------------------------------------------------
+# Scrape — Search
+# ---------------------------------------------------------------------------
+
+_SEARCH_FIELDS = """
+<div class="mb-3">
+  <label class="form-label fw-semibold">Keyword <span class="text-danger">*</span></label>
+  <input name="keyword" class="form-control" placeholder='e.g. "vintage rolex"' required />
+</div>
+<div class="mb-3">
+  <label class="form-label fw-semibold">Store Name <span class="text-muted fw-normal">(optional label for this scrape)</span></label>
+  <input name="store_name" class="form-control" placeholder='e.g. "Rolex Market Research"' />
+</div>
+<div class="mb-3">
+  <label class="form-label fw-semibold">Pages to scrape</label>
+  <select name="pages" class="form-select" id="pagesSelect" onchange="toggleCustomPages(this)">
+    <option value="0">All pages (auto)</option>
+    <option value="1">1 page (~60 items)</option>
+    <option value="3">3 pages (~180 items)</option>
+    <option value="5">5 pages (~300 items)</option>
+    <option value="10">10 pages (~600 items)</option>
+    <option value="custom">Custom…</option>
+  </select>
+</div>
+<div class="mb-3 d-none" id="customPagesWrap">
+  <label class="form-label fw-semibold">Custom page count</label>
+  <input name="pages_custom" type="number" class="form-control" value="2" min="1" max="100" />
+</div>
+<div class="form-check mb-2">
+  <input class="form-check-input" type="checkbox" name="sold" id="sold" value="1" />
+  <label class="form-check-label fw-semibold" for="sold">Sold / completed only</label>
+</div>
+<script>
+function toggleCustomPages(sel) {
+  document.getElementById('customPagesWrap').classList.toggle('d-none', sel.value !== 'custom');
+}
+</script>
+"""
+
+@app.route("/scrape/search", methods=["GET", "POST"])
+def scrape_search():
+    if request.method == "POST":
+        keyword    = request.form.get("keyword", "").strip()
+        store_name = request.form.get("store_name", "").strip() or None
+        pages      = _parse_pages(request.form)
+        sold       = bool(request.form.get("sold"))
+        if not keyword:
+            flash("Please enter a keyword.", "error")
+            return redirect(url_for("scrape_search"))
+
+        listings = sc.scrape_search(keyword, pages=pages, sold_only=sold)
+        saved = _bulk_save(listings, store_name=store_name)
+        flash(f'Scraped {len(listings)} listings for "{keyword}" — {saved} saved to database.', "success")
+        return redirect(url_for("listings"))
+
+    return render_template(
+        "scrape.html",
+        form_title="Search eBay",
+        form_desc="Scrape listings by keyword. Tick 'Sold only' to collect historical sold prices.",
+        card_class="search-card",
+        form_fields=_SEARCH_FIELDS,
+        tips=[
+            "Use specific keywords for better results.",
+            "Sold/completed items are great for price research.",
+            "Each page returns ~60 listings.",
+            "'All pages (auto)' keeps going until eBay has no more results.",
+            "Large searches (1000+ items) can take a few minutes — the button will spin.",
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Scrape — Seller
+# ---------------------------------------------------------------------------
+
+_SELLER_FIELDS = """
+<div class="mb-2">
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <label class="form-label fw-semibold mb-0">Sellers</label>
+    <span class="text-muted small">Scraped one by one in order</span>
+  </div>
+
+  <div class="mb-2 d-flex gap-2 align-items-center" style="font-size:.78rem;color:#6c757d;font-weight:600;">
+    <div style="flex:1;">USERNAME</div>
+    <div style="flex:1;">STORE NAME <span style="font-weight:400;">(optional)</span></div>
+    <div style="width:36px;"></div>
+  </div>
+
+  <div id="seller-rows">
+    <div class="seller-row mb-2 d-flex gap-2 align-items-center">
+      <input name="seller" class="form-control" placeholder="e.g. best_seller_123" />
+      <input name="store_name" class="form-control" placeholder="e.g. Apple Reseller UK" />
+      <button type="button" class="btn btn-outline-danger btn-sm remove-row" style="min-width:36px;font-size:1.1rem;line-height:1;">−</button>
+    </div>
+    <div class="seller-row mb-2 d-flex gap-2 align-items-center">
+      <input name="seller" class="form-control" placeholder="e.g. best_seller_123" />
+      <input name="store_name" class="form-control" placeholder="e.g. Apple Reseller UK" />
+      <button type="button" class="btn btn-outline-danger btn-sm remove-row" style="min-width:36px;font-size:1.1rem;line-height:1;">−</button>
+    </div>
+    <div class="seller-row mb-2 d-flex gap-2 align-items-center">
+      <input name="seller" class="form-control" placeholder="e.g. best_seller_123" />
+      <input name="store_name" class="form-control" placeholder="e.g. Apple Reseller UK" />
+      <button type="button" class="btn btn-outline-danger btn-sm remove-row" style="min-width:36px;font-size:1.1rem;line-height:1;">−</button>
+    </div>
+  </div>
+
+  <button type="button" id="add-seller-row" class="btn btn-outline-secondary btn-sm mt-1">
+    <i class="bi bi-plus-lg me-1"></i> Add seller
+  </button>
+</div>
+
+<div class="mb-3 mt-3">
+  <label class="form-label fw-semibold">Pages per seller</label>
+  <select name="pages" class="form-select" id="pagesSelect" onchange="toggleCustomPages(this)">
+    <option value="0">All pages (auto)</option>
+    <option value="1">1 page (~60 items)</option>
+    <option value="3">3 pages (~180 items)</option>
+    <option value="5">5 pages (~300 items)</option>
+    <option value="10">10 pages (~600 items)</option>
+    <option value="custom">Custom…</option>
+  </select>
+</div>
+<div class="mb-3 d-none" id="customPagesWrap">
+  <label class="form-label fw-semibold">Custom page count</label>
+  <input name="pages_custom" type="number" class="form-control" value="2" min="1" max="100" />
+</div>
+
+<script>
+function toggleCustomPages(sel) {
+  document.getElementById('customPagesWrap').classList.toggle('d-none', sel.value !== 'custom');
+}
+
+function makeRow() {
+  const div = document.createElement('div');
+  div.className = 'seller-row mb-2 d-flex gap-2 align-items-center';
+  div.innerHTML = `
+    <input name="seller" class="form-control" placeholder="e.g. best_seller_123" />
+    <input name="store_name" class="form-control" placeholder="e.g. Apple Reseller UK" />
+    <button type="button" class="btn btn-outline-danger btn-sm remove-row" style="min-width:36px;font-size:1.1rem;line-height:1;">−</button>
+  `;
+  return div;
+}
+
+document.getElementById('add-seller-row').addEventListener('click', function () {
+  document.getElementById('seller-rows').appendChild(makeRow());
+});
+
+document.getElementById('seller-rows').addEventListener('click', function (e) {
+  if (e.target.classList.contains('remove-row')) {
+    const rows = document.querySelectorAll('.seller-row');
+    if (rows.length > 1) e.target.closest('.seller-row').remove();
+  }
+});
+</script>
+"""
+
+@app.route("/scrape/seller", methods=["GET", "POST"])
+def scrape_seller():
+    if request.method == "POST":
+        sellers     = [s.strip() for s in request.form.getlist("seller") if s.strip()]
+        store_names = request.form.getlist("store_name")
+        pages       = _parse_pages(request.form)
+
+        if not sellers:
+            flash("Please enter at least one seller username.", "error")
+            return redirect(url_for("scrape_seller"))
+
+        summaries = []
+        total_saved = 0
+        for i, seller in enumerate(sellers):
+            store_name = (store_names[i].strip() if i < len(store_names) else "") or seller
+            print(f"\n--- Scraping seller {i+1}/{len(sellers)}: {seller} (store: {store_name}) ---")
+            listings = sc.scrape_seller(seller, pages=pages)
+            saved    = _bulk_save(listings, store_name=store_name)
+            total_saved += saved
+            summaries.append(f"{store_name}: {saved} listings")
+
+        flash(
+            f'Scraped {len(sellers)} seller(s) — {total_saved} total listings saved. '
+            + " | ".join(summaries),
+            "success",
+        )
+        return redirect(url_for("listings"))
+
+    return render_template(
+        "scrape.html",
+        form_title="Scrape Sellers",
+        form_desc="Scrape listings from multiple eBay sellers. Each seller is scraped one by one.",
+        card_class="seller-card",
+        form_fields=_SELLER_FIELDS,
+        tips=[
+            "Add up to as many sellers as you need with the + button.",
+            "Store Name lets you tag each seller with a friendly label.",
+            "If Store Name is left blank, the seller username is used.",
+            "Pages per seller applies to all sellers equally.",
+            "Sellers are scraped in order — the button spins until all are done.",
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Scrape — Product URL
+# ---------------------------------------------------------------------------
+
+_PRODUCT_FIELDS = """
+<div class="mb-3">
+  <label class="form-label fw-semibold">eBay listing URL <span class="text-danger">*</span></label>
+  <input name="url" class="form-control" placeholder="https://www.ebay.com/itm/..." required />
+  <div class="form-text">Paste the full URL of any eBay listing.</div>
+</div>
+<div class="mb-3">
+  <label class="form-label fw-semibold">Store Name <span class="text-muted fw-normal">(optional)</span></label>
+  <input name="store_name" class="form-control" placeholder='e.g. "Apple UK Official"' />
+</div>
+"""
+
+@app.route("/scrape/product", methods=["GET", "POST"])
+def scrape_product():
+    if request.method == "POST":
+        url        = request.form.get("url", "").strip()
+        store_name = request.form.get("store_name", "").strip() or None
+        if not url:
+            flash("Please enter a URL.", "error")
+            return redirect(url_for("scrape_product"))
+
+        listing, detail = sc.scrape_product(url)
+        if not listing:
+            flash("Failed to scrape that URL. Check it's a valid eBay listing.", "error")
+            return redirect(url_for("scrape_product"))
+
+        listing["store_name"] = store_name
+        listing_id = db.upsert_listing(listing)
+        if detail:
+            detail["listing_id"] = listing_id
+            db.upsert_product_detail(detail)
+        flash(f'Product scraped: "{listing["title"][:60]}"', "success")
+        return redirect(url_for("listing_detail", listing_id=listing_id))
+
+    return render_template(
+        "scrape.html",
+        form_title="Scrape Product URL",
+        form_desc="Scrape a single eBay listing for full details, item specifics, and seller info.",
+        card_class="product-card",
+        form_fields=_PRODUCT_FIELDS,
+        tips=[
+            "Works with any active or completed eBay listing URL.",
+            "Fetches item specifics, seller feedback, auction details, and more.",
+            "Re-scraping the same URL updates the record in place.",
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _parse_pages(form) -> int:
+    """Return page count from form. 0 means auto-paginate all."""
+    val = form.get("pages", "0")
+    if val == "custom":
+        try:
+            return max(1, min(100, int(form.get("pages_custom", 1) or 1)))
+        except ValueError:
+            return 1
+    try:
+        return max(0, int(val))
+    except ValueError:
+        return 0
+
+
+def _bulk_save(listings: list[dict], store_name: str = None) -> int:
+    db.init_db()
+    saved = 0
+    for item in listings:
+        try:
+            item["store_name"] = store_name
+            db.upsert_listing(item)
+            saved += 1
+        except Exception as exc:
+            print(f"  DB error: {exc}")
+    return saved
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    print("Starting eBay Scraper web UI at http://127.0.0.1:5000")
+    app.run(debug=False, port=5000, threaded=True)
