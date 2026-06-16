@@ -9,7 +9,21 @@ from urllib.parse import urlencode
 from bs4 import BeautifulSoup, Tag
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
+from make_model_utils import extract_make_model
+
 BASE_URL = "https://www.ebay.com"
+
+_stop_requested = False
+
+
+def request_stop() -> None:
+    global _stop_requested
+    _stop_requested = True
+
+
+def clear_stop() -> None:
+    global _stop_requested
+    _stop_requested = False
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -106,6 +120,18 @@ def _parse_card(item: Tag, is_sold: bool) -> dict | None:
     cond_el = item.select_one(".s-card__subtitle span.su-styled-text")
     condition = _text(cond_el)
 
+    # Some eBay cards put "Brand · Model · …" in the subtitle instead of a condition string
+    make = model = None
+    if condition and "·" in condition:
+        parts = [p.strip() for p in condition.split("·") if p.strip()]
+        make = parts[0] if len(parts) >= 1 else None
+        model = parts[1] if len(parts) >= 2 else None
+        condition = None
+
+    # Fallback: extract from title when subtitle didn't yield make/model
+    if not make:
+        make, model = extract_make_model(title)
+
     price_el = item.select_one(".s-card__price")
     price = _parse_price(_text(price_el))
 
@@ -141,6 +167,8 @@ def _parse_card(item: Tag, is_sold: bool) -> dict | None:
         "condition": condition,
         "image_url": image_url,
         "seller": seller,
+        "make": make,
+        "model": model,
         "location": None,
         "shipping": shipping,
         "bids": bids,
@@ -154,7 +182,8 @@ def _parse_card(item: Tag, is_sold: bool) -> dict | None:
 # Public scraping functions
 # ---------------------------------------------------------------------------
 
-def scrape_search(keyword: str, pages: int = 0, sold_only: bool = False) -> list[dict]:
+def scrape_search(keyword: str, pages: int = 0, sold_only: bool = False,
+                  _on_page=None) -> list[dict]:
     """Scrape search results. pages=0 auto-paginates all available pages (up to 100)."""
     results = []
     auto = pages == 0
@@ -162,6 +191,10 @@ def scrape_search(keyword: str, pages: int = 0, sold_only: bool = False) -> list
 
     with _browser_session() as page:
         for p in range(1, max_p + 1):
+            if _stop_requested:
+                print("  Stop requested — halting.")
+                break
+
             params: dict = {"_nkw": keyword, "_pgn": p}
             if sold_only:
                 params["LH_Complete"] = "1"
@@ -184,6 +217,8 @@ def scrape_search(keyword: str, pages: int = 0, sold_only: bool = False) -> list
                     results.append(data)
 
             print(f"  Collected {len(results)} listings so far.")
+            if _on_page:
+                _on_page(page=p, collected=len(results))
 
             if auto and not _has_next_page(soup):
                 print("  Last page reached.")
@@ -192,7 +227,7 @@ def scrape_search(keyword: str, pages: int = 0, sold_only: bool = False) -> list
     return results
 
 
-def scrape_seller(seller: str, pages: int = 0) -> list[dict]:
+def scrape_seller(seller: str, pages: int = 0, _on_page=None) -> list[dict]:
     """Scrape seller listings. pages=0 auto-paginates all available pages."""
     results = []
     auto = pages == 0
@@ -200,6 +235,10 @@ def scrape_seller(seller: str, pages: int = 0) -> list[dict]:
 
     with _browser_session() as page:
         for p in range(1, max_p + 1):
+            if _stop_requested:
+                print("  Stop requested — halting.")
+                break
+
             url = f"{BASE_URL}/sch/{seller}/m.html?_pgn={p}"
             print(f"  Seller page {p}: {url}")
 
@@ -220,6 +259,8 @@ def scrape_seller(seller: str, pages: int = 0) -> list[dict]:
                     results.append(data)
 
             print(f"  Collected {len(results)} listings so far.")
+            if _on_page:
+                _on_page(page=p, collected=len(results))
 
             if auto and not _has_next_page(soup):
                 print("  Last page reached.")
@@ -310,6 +351,14 @@ def scrape_product(url: str) -> tuple[dict | None, dict | None]:
             if m:
                 feedback_pct = float(m.group(1))
 
+        make = specifics.get("Brand") or specifics.get("Make")
+        model = specifics.get("Model")
+        # Fallback to title parsing when item specifics don't have make/model
+        if not make:
+            make, title_model = extract_make_model(title)
+            if not model:
+                model = title_model
+
         listing = {
             "ebay_id": ebay_id,
             "url": clean,
@@ -319,6 +368,8 @@ def scrape_product(url: str) -> tuple[dict | None, dict | None]:
             "condition": condition,
             "image_url": image_url,
             "seller": seller,
+            "make": make,
+            "model": model,
             "location": location,
             "shipping": shipping,
             "bids": None,

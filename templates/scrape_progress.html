@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+{% block title %}Scraping… — eBay Scraper{% endblock %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <div>
+    <div class="page-title">Scrape Progress</div>
+    <div class="text-muted small" id="statusLine">Connecting…</div>
+  </div>
+  <div class="d-flex gap-2">
+    <button id="stopBtn" class="btn btn-danger" onclick="stopScrape()">
+      <i class="bi bi-stop-fill me-1"></i> Stop Scraping
+    </button>
+    <a href="/listings" class="btn btn-outline-secondary">
+      <i class="bi bi-list-ul me-1"></i> View Listings
+    </a>
+  </div>
+</div>
+
+<!-- Stats row -->
+<div class="row g-3 mb-4">
+  <div class="col-sm-4">
+    <div class="card p-3 text-center">
+      <div class="text-muted small mb-1">Task</div>
+      <div class="fw-semibold" id="taskName">—</div>
+      <div class="text-muted small text-truncate" id="taskDetail" title="">—</div>
+    </div>
+  </div>
+  <div class="col-sm-4">
+    <div class="card p-3 text-center">
+      <div class="text-muted small mb-1">Items Collected</div>
+      <div class="fw-bold fs-3" id="collectedCount">0</div>
+    </div>
+  </div>
+  <div class="col-sm-4">
+    <div class="card p-3 text-center">
+      <div class="text-muted small mb-1">Saved to Database</div>
+      <div class="fw-bold fs-3 text-success" id="savedCount">0</div>
+    </div>
+  </div>
+</div>
+
+<!-- Live log -->
+<div class="card mb-4">
+  <div class="card-header d-flex justify-content-between align-items-center py-2">
+    <span class="fw-semibold small">Live Log</span>
+    <div class="d-flex align-items-center gap-2">
+      <span id="spinner" class="spinner-border spinner-border-sm text-primary"></span>
+      <span id="doneChip" class="badge bg-success d-none">Done</span>
+    </div>
+  </div>
+  <div id="logBox"
+       style="height:380px;overflow-y:auto;font-family:'Courier New',monospace;font-size:.8rem;
+              padding:1rem;background:#0d1117;color:#c9d1d9;line-height:1.5;">
+    <span class="text-muted">Waiting for output…</span>
+  </div>
+</div>
+
+<!-- Alerts shown when done -->
+<div id="doneAlert" class="alert alert-success d-none">
+  <i class="bi bi-check-circle-fill me-2"></i>
+  Scraping complete! Redirecting to listings in <span id="countdown">3</span>s…
+  <a href="/listings" class="alert-link ms-2">Go now →</a>
+</div>
+<div id="errorAlert" class="alert alert-danger d-none">
+  <i class="bi bi-exclamation-triangle-fill me-2"></i>
+  <strong>Error:</strong> <span id="errorMsg"></span>
+  <a href="/listings" class="btn btn-sm btn-outline-danger ms-3">View Listings</a>
+</div>
+
+<script>
+(function () {
+  let lastLen = 0;
+  let finished = false;
+  let everRunning = false;  // have we seen running=true at least once?
+
+  async function poll() {
+    if (finished) return;
+    try {
+      const r = await fetch('/scrape/status');
+      const s = await r.json();
+      render(s);
+    } catch (_) {}
+  }
+
+  function render(s) {
+    const running = s.running;
+    if (running) everRunning = true;
+
+    document.getElementById('taskName').textContent = s.task || '—';
+    const det = document.getElementById('taskDetail');
+    det.textContent = s.detail || '—';
+    det.title = s.detail || '';
+    document.getElementById('collectedCount').textContent = s.collected || 0;
+    document.getElementById('savedCount').textContent = s.saved || 0;
+
+    const statusLine = running
+      ? ('Scraping…' + (s.page ? '  page ' + s.page : ''))
+      : (everRunning ? (s.error ? 'Error' : 'Done') : 'Starting…');
+    document.getElementById('statusLine').textContent = statusLine;
+
+    // Append new log lines
+    const log = s.log || [];
+    if (log.length > lastLen) {
+      const box = document.getElementById('logBox');
+      if (lastLen === 0) box.innerHTML = '';
+      for (let i = lastLen; i < log.length; i++) {
+        const div = document.createElement('div');
+        div.textContent = log[i];
+        box.appendChild(div);
+      }
+      lastLen = log.length;
+      box.scrollTop = box.scrollHeight;
+    }
+
+    // Stop button — only disable once we know the job actually finished
+    const stopBtn = document.getElementById('stopBtn');
+    if (everRunning && (!running || s.stop_requested)) {
+      stopBtn.disabled = true;
+      if (s.stop_requested && running) {
+        stopBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Stopping…';
+      }
+    }
+
+    // Treat as finished only after we've seen it running
+    if (everRunning && !running && s.done) {
+      document.getElementById('spinner').classList.add('d-none');
+      finished = true;
+      stopBtn.disabled = true;
+
+      if (s.error) {
+        document.getElementById('errorMsg').textContent = s.error;
+        document.getElementById('errorAlert').classList.remove('d-none');
+      } else {
+        document.getElementById('doneChip').classList.remove('d-none');
+        document.getElementById('doneAlert').classList.remove('d-none');
+        let n = 3;
+        const cd = document.getElementById('countdown');
+        const t = setInterval(() => {
+          n--;
+          cd.textContent = n;
+          if (n <= 0) { clearInterval(t); window.location = '/listings'; }
+        }, 1000);
+      }
+    }
+  }
+
+  async function stopScrape() {
+    const btn = document.getElementById('stopBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Stopping…';
+    try { await fetch('/scrape/stop', { method: 'POST' }); } catch (_) {}
+  }
+
+  window.stopScrape = stopScrape;
+  setInterval(poll, 1500);
+  poll();
+})();
+</script>
+{% endblock %}

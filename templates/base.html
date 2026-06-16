@@ -97,6 +97,20 @@
         <a href="/scrape/product" class="nav-link {% if request.path == '/scrape/product' %}active{% endif %}">
           <i class="bi bi-link-45deg"></i> Product URL
         </a>
+        <a href="/scrape/progress" class="nav-link {% if request.path == '/scrape/progress' %}active{% endif %}">
+          <i class="bi bi-activity"></i> Progress
+          {% if scrape_running %}<span class="badge bg-danger ms-1" style="font-size:.6rem;vertical-align:middle;">LIVE</span>{% endif %}
+        </a>
+
+        {% if scrape_running %}
+        <div class="px-3 mt-2 mb-1">
+          <form method="post" action="/scrape/stop">
+            <button type="submit" class="btn btn-danger btn-sm w-100">
+              <i class="bi bi-stop-fill me-1"></i> Stop Scraping
+            </button>
+          </form>
+        </div>
+        {% endif %}
       </nav>
     </div>
 

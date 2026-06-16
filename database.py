@@ -49,6 +49,8 @@ def upsert_listing(data: dict) -> int:
         "bids":       data.get("bids"),
         "is_sold":    bool(data.get("is_sold")),
         "sold_date":  data.get("sold_date"),
+        "make":       data.get("make"),
+        "model":      data.get("model"),
         "scraped_at": data.get("scraped_at"),
     }
     result = _db().table("listings").upsert(row, on_conflict="url").execute()
@@ -99,6 +101,8 @@ def query_listings(
     keyword: str = None,
     seller: str = None,
     store_name: str = None,
+    make: str = None,
+    model: str = None,
     sold_only: bool = False,
     active_only: bool = False,
     limit: int = 50,
@@ -111,6 +115,10 @@ def query_listings(
         q = q.ilike("seller", f"%{seller}%")
     if store_name:
         q = q.ilike("store_name", f"%{store_name}%")
+    if make:
+        q = q.ilike("make", f"%{make}%")
+    if model:
+        q = q.ilike("model", f"%{model}%")
     if sold_only:
         q = q.eq("is_sold", True)
     elif active_only:

@@ -1,13 +1,124 @@
 import json
 import os
+import threading
 
-from flask import Flask, flash, redirect, render_template, request, url_for
+from flask import Flask, flash, jsonify, redirect, render_template, request, url_for
 
 import database as db
 import scraper as sc
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(24)
+
+
+@app.context_processor
+def _inject_job_state():
+    with _JOB_LOCK:
+        return {"scrape_running": _JOB.get("running", False)}
+
+# ---------------------------------------------------------------------------
+# Background job state  (single-worker, threaded=True safe)
+# ---------------------------------------------------------------------------
+
+_JOB: dict = {
+    "running": False,
+    "done": True,
+    "task": "",
+    "detail": "",
+    "page": 0,
+    "collected": 0,
+    "saved": 0,
+    "log": [],
+    "error": None,
+    "stop_requested": False,
+}
+_JOB_LOCK = threading.Lock()
+
+
+def _jset(**kw) -> None:
+    with _JOB_LOCK:
+        _JOB.update(kw)
+
+
+def _jlog(msg: str) -> None:
+    print(msg)
+    with _JOB_LOCK:
+        _JOB["log"].append(msg)
+        if len(_JOB["log"]) > 200:
+            _JOB["log"] = _JOB["log"][-200:]
+
+
+def _on_page(page: int, collected: int) -> None:
+    _jlog(f"Page {page} — {collected} items collected so far")
+    _jset(page=page, collected=collected)
+
+
+# Background worker functions
+
+def _run_search(keyword: str, pages: int, sold: bool, store_name) -> None:
+    try:
+        _jset(running=True, done=False, task="Search", detail=keyword,
+              page=0, collected=0, saved=0, log=[], error=None, stop_requested=False)
+        _jlog(f'Scraping eBay search: "{keyword}"')
+        sc.clear_stop()
+        listings = sc.scrape_search(keyword, pages=pages, sold_only=sold, _on_page=_on_page)
+        _jlog(f"Scrape complete — {len(listings)} listings found")
+        saved = _bulk_save(listings, store_name=store_name)
+        _jlog(f"Saved {saved} to database. Done!")
+        _jset(saved=saved, done=True, running=False)
+    except Exception as exc:
+        _jlog(f"Error: {exc}")
+        _jset(error=str(exc), done=True, running=False)
+
+
+def _run_seller(sellers: list, store_names: list, pages: int) -> None:
+    try:
+        total = len(sellers)
+        _jset(running=True, done=False, task="Seller", detail=f"{total} seller(s)",
+              page=0, collected=0, saved=0, log=[], error=None, stop_requested=False)
+        sc.clear_stop()
+        total_saved = 0
+        for i, seller in enumerate(sellers):
+            if sc._stop_requested:
+                _jlog("Stopped by user.")
+                break
+            store_name = (store_names[i].strip() if i < len(store_names) else "") or seller
+            _jset(detail=f"{seller} ({i+1}/{total})", page=0, collected=0)
+            _jlog(f"--- Seller {i+1}/{total}: {seller} (store: {store_name}) ---")
+            listings = sc.scrape_seller(seller, pages=pages, _on_page=_on_page)
+            _jlog(f"Found {len(listings)} listings for {seller}")
+            saved = _bulk_save(listings, store_name=store_name)
+            total_saved += saved
+            _jlog(f"Saved {saved} for {seller} | total so far: {total_saved}")
+            _jset(saved=total_saved)
+        _jlog(f"All done — {total_saved} total listings saved.")
+        _jset(done=True, running=False)
+    except Exception as exc:
+        _jlog(f"Error: {exc}")
+        _jset(error=str(exc), done=True, running=False)
+
+
+def _run_product(url: str, store_name) -> None:
+    try:
+        _jset(running=True, done=False, task="Product URL", detail=url,
+              page=0, collected=0, saved=0, log=[], error=None, stop_requested=False)
+        _jlog(f"Scraping: {url}")
+        sc.clear_stop()
+        listing, detail = sc.scrape_product(url)
+        if not listing:
+            _jlog("Failed to scrape that URL.")
+            _jset(error="Could not scrape the URL — check it is a valid eBay listing.", done=True, running=False)
+            return
+        listing["store_name"] = store_name
+        listing_id = db.upsert_listing(listing)
+        if detail:
+            detail["listing_id"] = listing_id
+            db.upsert_product_detail(detail)
+        _jlog(f'Saved: "{listing["title"][:70]}"')
+        _jset(saved=1, collected=1, done=True, running=False)
+    except Exception as exc:
+        _jlog(f"Error: {exc}")
+        _jset(error=str(exc), done=True, running=False)
 
 
 # ---------------------------------------------------------------------------
@@ -32,6 +143,8 @@ def listings():
     keyword    = request.args.get("keyword", "").strip()
     seller     = request.args.get("seller", "").strip()
     store_name = request.args.get("store_name", "").strip()
+    make       = request.args.get("make", "").strip()
+    model      = request.args.get("model", "").strip()
     status     = request.args.get("status", "")
     limit      = int(request.args.get("limit", 50))
 
@@ -39,6 +152,8 @@ def listings():
         keyword=keyword or None,
         seller=seller or None,
         store_name=store_name or None,
+        make=make or None,
+        model=model or None,
         sold_only=(status == "sold"),
         active_only=(status == "active"),
         limit=limit,
@@ -47,7 +162,8 @@ def listings():
         "listings.html",
         rows=rows,
         total=total,
-        filters={"keyword": keyword, "seller": seller, "store_name": store_name, "status": status, "limit": limit},
+        filters={"keyword": keyword, "seller": seller, "store_name": store_name,
+                 "make": make, "model": model, "status": status, "limit": limit},
     )
 
 
@@ -121,6 +237,9 @@ function toggleCustomPages(sel) {
 @app.route("/scrape/search", methods=["GET", "POST"])
 def scrape_search():
     if request.method == "POST":
+        if _JOB["running"]:
+            flash("A scrape is already in progress — stop it first or wait.", "error")
+            return redirect(url_for("scrape_progress_page"))
         keyword    = request.form.get("keyword", "").strip()
         store_name = request.form.get("store_name", "").strip() or None
         pages      = _parse_pages(request.form)
@@ -128,11 +247,10 @@ def scrape_search():
         if not keyword:
             flash("Please enter a keyword.", "error")
             return redirect(url_for("scrape_search"))
-
-        listings = sc.scrape_search(keyword, pages=pages, sold_only=sold)
-        saved = _bulk_save(listings, store_name=store_name)
-        flash(f'Scraped {len(listings)} listings for "{keyword}" — {saved} saved to database.', "success")
-        return redirect(url_for("listings"))
+        _jset(running=True, done=False, task="Search", detail=keyword,
+              page=0, collected=0, saved=0, log=[], error=None, stop_requested=False)
+        threading.Thread(target=_run_search, args=(keyword, pages, sold, store_name), daemon=True).start()
+        return redirect(url_for("scrape_progress_page"))
 
     return render_template(
         "scrape.html",
@@ -246,22 +364,13 @@ def scrape_seller():
             flash("Please enter at least one seller username.", "error")
             return redirect(url_for("scrape_seller"))
 
-        summaries = []
-        total_saved = 0
-        for i, seller in enumerate(sellers):
-            store_name = (store_names[i].strip() if i < len(store_names) else "") or seller
-            print(f"\n--- Scraping seller {i+1}/{len(sellers)}: {seller} (store: {store_name}) ---")
-            listings = sc.scrape_seller(seller, pages=pages)
-            saved    = _bulk_save(listings, store_name=store_name)
-            total_saved += saved
-            summaries.append(f"{store_name}: {saved} listings")
-
-        flash(
-            f'Scraped {len(sellers)} seller(s) — {total_saved} total listings saved. '
-            + " | ".join(summaries),
-            "success",
-        )
-        return redirect(url_for("listings"))
+        if _JOB["running"]:
+            flash("A scrape is already in progress — stop it first or wait.", "error")
+            return redirect(url_for("scrape_progress_page"))
+        _jset(running=True, done=False, task="Seller", detail=f"{len(sellers)} seller(s)",
+              page=0, collected=0, saved=0, log=[], error=None, stop_requested=False)
+        threading.Thread(target=_run_seller, args=(sellers, store_names, pages), daemon=True).start()
+        return redirect(url_for("scrape_progress_page"))
 
     return render_template(
         "scrape.html",
@@ -304,18 +413,13 @@ def scrape_product():
             flash("Please enter a URL.", "error")
             return redirect(url_for("scrape_product"))
 
-        listing, detail = sc.scrape_product(url)
-        if not listing:
-            flash("Failed to scrape that URL. Check it's a valid eBay listing.", "error")
-            return redirect(url_for("scrape_product"))
-
-        listing["store_name"] = store_name
-        listing_id = db.upsert_listing(listing)
-        if detail:
-            detail["listing_id"] = listing_id
-            db.upsert_product_detail(detail)
-        flash(f'Product scraped: "{listing["title"][:60]}"', "success")
-        return redirect(url_for("listing_detail", listing_id=listing_id))
+        if _JOB["running"]:
+            flash("A scrape is already in progress — stop it first or wait.", "error")
+            return redirect(url_for("scrape_progress_page"))
+        _jset(running=True, done=False, task="Product URL", detail=url,
+              page=0, collected=0, saved=0, log=[], error=None, stop_requested=False)
+        threading.Thread(target=_run_product, args=(url, store_name), daemon=True).start()
+        return redirect(url_for("scrape_progress_page"))
 
     return render_template(
         "scrape.html",
@@ -329,6 +433,35 @@ def scrape_product():
             "Re-scraping the same URL updates the record in place.",
         ],
     )
+
+
+# ---------------------------------------------------------------------------
+# Scrape — Progress / Stop / Status
+# ---------------------------------------------------------------------------
+
+@app.route("/scrape/progress")
+def scrape_progress_page():
+    with _JOB_LOCK:
+        status = dict(_JOB)
+    return render_template("scrape_progress.html", status=status)
+
+
+@app.route("/scrape/status")
+def scrape_status_api():
+    with _JOB_LOCK:
+        return jsonify(dict(_JOB))
+
+
+@app.route("/scrape/stop", methods=["POST"])
+def scrape_stop():
+    sc.request_stop()
+    _jlog("Stop requested by user...")
+    _jset(stop_requested=True)
+    # Accept both AJAX (fetch) and plain form POST
+    if request.headers.get("Accept", "").startswith("application/json") or \
+       request.content_type == "application/json":
+        return jsonify({"ok": True})
+    return redirect(url_for("scrape_progress_page"))
 
 
 # ---------------------------------------------------------------------------
