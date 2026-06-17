@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS listings (
     bids        INTEGER,
     is_sold     BOOLEAN DEFAULT FALSE,
     sold_date   TEXT,
+    listed_date TEXT,
     scraped_at  TEXT NOT NULL
 );
 
@@ -29,6 +30,9 @@ CREATE TABLE IF NOT EXISTS product_details (
     seller_feedback_percent NUMERIC,
     scraped_at              TEXT NOT NULL
 );
+
+-- Migration: run if the table already exists
+-- ALTER TABLE listings ADD COLUMN IF NOT EXISTS listed_date TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_listings_ebay_id ON listings(ebay_id);
 CREATE INDEX IF NOT EXISTS idx_listings_seller  ON listings(seller);

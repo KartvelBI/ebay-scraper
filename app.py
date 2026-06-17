@@ -98,6 +98,22 @@ def _run_seller(sellers: list, store_names: list, pages: int) -> None:
         _jset(error=str(exc), done=True, running=False)
 
 
+def _run_url_scrape(url: str, pages: int, store_name) -> None:
+    try:
+        _jset(running=True, done=False, task="URL Scrape", detail=url,
+              page=0, collected=0, saved=0, log=[], error=None, stop_requested=False)
+        _jlog(f"Scraping eBay URL: {url}")
+        sc.clear_stop()
+        listings = sc.scrape_from_url(url, pages=pages, _on_page=_on_page)
+        _jlog(f"Scrape complete — {len(listings)} listings found")
+        saved = _bulk_save(listings, store_name=store_name)
+        _jlog(f"Saved {saved} to database. Done!")
+        _jset(saved=saved, done=True, running=False)
+    except Exception as exc:
+        _jlog(f"Error: {exc}")
+        _jset(error=str(exc), done=True, running=False)
+
+
 def _run_product(url: str, store_name) -> None:
     try:
         _jset(running=True, done=False, task="Product URL", detail=url,
@@ -431,6 +447,75 @@ def scrape_product():
             "Works with any active or completed eBay listing URL.",
             "Fetches item specifics, seller feedback, auction details, and more.",
             "Re-scraping the same URL updates the record in place.",
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Scrape — URL
+# ---------------------------------------------------------------------------
+
+_URL_FIELDS = """
+<div class="mb-3">
+  <label class="form-label fw-semibold">eBay search / browse URL <span class="text-danger">*</span></label>
+  <input name="url" class="form-control" placeholder="https://www.ebay.com/sch/i.html?_nkw=rolex&LH_Sold=1" required />
+  <div class="form-text">Paste any eBay search or browse URL — sold/active is detected automatically.</div>
+</div>
+<div class="mb-3">
+  <label class="form-label fw-semibold">Store Name <span class="text-muted fw-normal">(optional)</span></label>
+  <input name="store_name" class="form-control" placeholder='e.g. "Rolex Research"' />
+</div>
+<div class="mb-3">
+  <label class="form-label fw-semibold">Pages to scrape</label>
+  <select name="pages" class="form-select" id="pagesSelect" onchange="toggleCustomPages(this)">
+    <option value="0">All pages (auto)</option>
+    <option value="1">1 page (~60 items)</option>
+    <option value="3">3 pages (~180 items)</option>
+    <option value="5">5 pages (~300 items)</option>
+    <option value="10">10 pages (~600 items)</option>
+    <option value="custom">Custom…</option>
+  </select>
+</div>
+<div class="mb-3 d-none" id="customPagesWrap">
+  <label class="form-label fw-semibold">Custom page count</label>
+  <input name="pages_custom" type="number" class="form-control" value="2" min="1" max="100" />
+</div>
+<script>
+function toggleCustomPages(sel) {
+  document.getElementById('customPagesWrap').classList.toggle('d-none', sel.value !== 'custom');
+}
+</script>
+"""
+
+@app.route("/scrape/url", methods=["GET", "POST"])
+def scrape_url():
+    if request.method == "POST":
+        if _JOB["running"]:
+            flash("A scrape is already in progress — stop it first or wait.", "error")
+            return redirect(url_for("scrape_progress_page"))
+        url        = request.form.get("url", "").strip()
+        store_name = request.form.get("store_name", "").strip() or None
+        pages      = _parse_pages(request.form)
+        if not url:
+            flash("Please enter a URL.", "error")
+            return redirect(url_for("scrape_url"))
+        _jset(running=True, done=False, task="URL Scrape", detail=url,
+              page=0, collected=0, saved=0, log=[], error=None, stop_requested=False)
+        threading.Thread(target=_run_url_scrape, args=(url, pages, store_name), daemon=True).start()
+        return redirect(url_for("scrape_progress_page"))
+
+    return render_template(
+        "scrape.html",
+        form_title="Scrape from URL",
+        form_desc="Paste any eBay search or browse URL — sold/active status is detected automatically from the URL.",
+        card_class="url-card",
+        form_fields=_URL_FIELDS,
+        tips=[
+            "Works with any eBay search URL — just copy from your browser.",
+            "Sold/active status is auto-detected from URL parameters (LH_Sold, LH_Complete).",
+            "You can pre-filter on eBay (condition, price, location) before copying the URL.",
+            "'All pages (auto)' keeps going until eBay runs out of results.",
+            "Each page returns ~60 listings.",
         ],
     )
 

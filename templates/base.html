@@ -66,6 +66,7 @@
     .scrape-card.search-card { border-color: #6366f1; }
     .scrape-card.seller-card { border-color: #f59e0b; }
     .scrape-card.product-card { border-color: #10b981; }
+    .scrape-card.url-card { border-color: #3b82f6; }
     .flash-success { background: #d1fae5; border-color: #6ee7b7; color: #065f46; }
     .flash-error   { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
   </style>
@@ -96,6 +97,9 @@
         </a>
         <a href="/scrape/product" class="nav-link {% if request.path == '/scrape/product' %}active{% endif %}">
           <i class="bi bi-link-45deg"></i> Product URL
+        </a>
+        <a href="/scrape/url" class="nav-link {% if request.path == '/scrape/url' %}active{% endif %}">
+          <i class="bi bi-globe"></i> Scrape from URL
         </a>
         <a href="/scrape/progress" class="nav-link {% if request.path == '/scrape/progress' %}active{% endif %}">
           <i class="bi bi-activity"></i> Progress

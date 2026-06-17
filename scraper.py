@@ -4,7 +4,7 @@ import time
 import random
 from contextlib import contextmanager
 from datetime import datetime
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse, parse_qs, urljoin
 
 from bs4 import BeautifulSoup, Tag
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
@@ -96,6 +96,22 @@ def _text(el: Tag | None) -> str | None:
     return el.get_text(strip=True) if el else None
 
 
+_MONTHS = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,
+           "Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12}
+
+def _parse_listed_date(text: str, year: int) -> str | None:
+    """Convert 'Jun-17' or 'Jun-17 04:56' → '17.06.2026'."""
+    if not text:
+        return None
+    m = re.search(r"([A-Z][a-z]{2})-(\d{1,2})", text)
+    if not m:
+        return None
+    mon = _MONTHS.get(m.group(1))
+    if not mon:
+        return None
+    return f"{int(m.group(2)):02d}.{mon:02d}.{year}"
+
+
 # ---------------------------------------------------------------------------
 # Card parser  (new eBay SRP: li.s-card)
 # ---------------------------------------------------------------------------
@@ -154,9 +170,25 @@ def _parse_card(item: Tag, is_sold: bool) -> dict | None:
         elif shipping is None and re.search(r"delivery|shipping|^free", t, re.IGNORECASE):
             shipping = t
 
-    # Seller name (first span in the secondary attributes block)
+    # Seller name — first span in secondary attributes that isn't a date/time
     seller_spans = item.select(".su-card-container__attributes__secondary span.su-styled-text")
-    seller = _text(seller_spans[0]) if seller_spans else None
+    seller = None
+    for span in seller_spans:
+        t = _text(span) or ""
+        if re.search(r"[A-Z][a-z]{2}[-\s]\d{1,2}|\d{1,2}:\d{2}", t, re.IGNORECASE):
+            continue
+        if t:
+            seller = t
+            break
+
+    # Listed date — scan all text spans in the card for a "Mon-DD" pattern
+    now = datetime.now()
+    listed_date = None
+    for span in item.select("span.su-styled-text"):
+        t = _text(span) or ""
+        listed_date = _parse_listed_date(t, now.year)
+        if listed_date:
+            break
 
     return {
         "ebay_id": ebay_id,
@@ -174,7 +206,8 @@ def _parse_card(item: Tag, is_sold: bool) -> dict | None:
         "bids": bids,
         "is_sold": 1 if is_sold else 0,
         "sold_date": sold_date,
-        "scraped_at": datetime.now().isoformat(),
+        "listed_date": listed_date,
+        "scraped_at": now.isoformat(),
     }
 
 
@@ -390,3 +423,50 @@ def scrape_product(url: str) -> tuple[dict | None, dict | None]:
         }
 
         return listing, detail
+
+
+def scrape_from_url(url: str, pages: int = 0, _on_page=None) -> list[dict]:
+    """Scrape listings from any eBay search/browse URL. Paginates via _pgn param."""
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query, keep_blank_values=True)
+    is_sold = bool(qs.get("LH_Sold") or qs.get("LH_Complete"))
+    qs["_sop"] = ["10"]  # sort: newly listed
+
+    results = []
+    auto = pages == 0
+    max_p = 100 if auto else pages
+
+    with _browser_session() as page:
+        for p in range(1, max_p + 1):
+            if _stop_requested:
+                print("  Stop requested — halting.")
+                break
+
+            qs["_pgn"] = [str(p)]
+            paged_qs = {k: v[0] for k, v in qs.items()}
+            paged_url = parsed._replace(query=urlencode(paged_qs)).geturl()
+            print(f"  Page {p}: {paged_url}")
+
+            soup = _fetch(page, paged_url)
+            if not soup:
+                break
+
+            cards = soup.select("li.s-card")
+            if not cards:
+                print("  No listing cards found — stopping.")
+                break
+
+            for card in cards:
+                data = _parse_card(card, is_sold=is_sold)
+                if data:
+                    results.append(data)
+
+            print(f"  Collected {len(results)} listings so far.")
+            if _on_page:
+                _on_page(page=p, collected=len(results))
+
+            if auto and not _has_next_page(soup):
+                print("  Last page reached.")
+                break
+
+    return results
