@@ -38,24 +38,33 @@ _UA = (
 @contextmanager
 def _browser_session():
     with sync_playwright() as pw:
+        print("  Launching headless Chromium…")
         browser = pw.chromium.launch(
             headless=True,
             args=["--disable-blink-features=AutomationControlled"],
+            timeout=60000,  # fail fast instead of hanging if launch stalls
         )
-        ctx = browser.new_context(
-            user_agent=_UA,
-            viewport={"width": 1280, "height": 800},
-            locale="en-US",
-        )
-        ctx.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        )
-        page = ctx.new_page()
-        # Warm up — grab homepage to load cookies
-        page.goto(BASE_URL, wait_until="domcontentloaded", timeout=20000)
-        time.sleep(1.5)
-        yield page
-        browser.close()
+        try:
+            ctx = browser.new_context(
+                user_agent=_UA,
+                viewport={"width": 1280, "height": 800},
+                locale="en-US",
+            )
+            ctx.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
+            page = ctx.new_page()
+            # Warm up — grab homepage to load cookies
+            page.goto(BASE_URL, wait_until="domcontentloaded", timeout=20000)
+            time.sleep(1.5)
+            print("  Browser ready.")
+            yield page
+        finally:
+            # Never let teardown hang or mask the real result.
+            try:
+                browser.close()
+            except Exception as exc:
+                print(f"  (ignored browser close error: {exc})")
 
 
 def _fetch(page, url: str, wait_selector: str = "li.s-card") -> BeautifulSoup | None:
@@ -85,6 +94,9 @@ def _fetch_with_retry(page, url: str, retries: int = 2) -> BeautifulSoup | None:
     throttled) response. Returns the last soup attempted (may have no cards)."""
     soup = None
     for attempt in range(retries + 1):
+        if _stop_requested:
+            print("  Stop requested — aborting fetch.")
+            return None
         soup = _fetch(page, url)
         if soup and soup.select_one("li.s-card"):
             return soup
@@ -92,7 +104,14 @@ def _fetch_with_retry(page, url: str, retries: int = 2) -> BeautifulSoup | None:
             wait = random.uniform(4.0, 7.0) * (attempt + 1)
             print(f"  No cards (attempt {attempt + 1}/{retries + 1}) — "
                   f"backing off {wait:.0f}s and retrying")
-            time.sleep(wait)
+            # Sleep in small slices so a stop request is honoured promptly.
+            slept = 0.0
+            while slept < wait:
+                if _stop_requested:
+                    print("  Stop requested — aborting backoff.")
+                    return None
+                time.sleep(0.5)
+                slept += 0.5
     return soup
 
 
