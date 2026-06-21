@@ -48,6 +48,7 @@ def upsert_listing(data: dict) -> int:
         "shipping":   data.get("shipping"),
         "bids":       data.get("bids"),
         "is_sold":      bool(data.get("is_sold")),
+        "status":       data.get("status") or ("Sold" if data.get("is_sold") else "Active"),
         "sold_date":    data.get("sold_date"),
         "listed_date":  data.get("listed_date"),
         "make":         data.get("make"),

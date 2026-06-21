@@ -205,6 +205,7 @@ def _parse_card(item: Tag, is_sold: bool) -> dict | None:
         "shipping": shipping,
         "bids": bids,
         "is_sold": 1 if is_sold else 0,
+        "status": "Sold" if is_sold else "Active",
         "sold_date": sold_date,
         "listed_date": listed_date,
         "scraped_at": now.isoformat(),
@@ -407,6 +408,7 @@ def scrape_product(url: str) -> tuple[dict | None, dict | None]:
             "shipping": shipping,
             "bids": None,
             "is_sold": 0,
+            "status": "Active",
             "sold_date": None,
             "scraped_at": now,
         }

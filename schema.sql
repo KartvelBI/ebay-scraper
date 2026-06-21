@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS listings (
     shipping    TEXT,
     bids        INTEGER,
     is_sold     BOOLEAN DEFAULT FALSE,
+    status      TEXT DEFAULT 'Active',
     sold_date   TEXT,
     listed_date TEXT,
     scraped_at  TEXT NOT NULL
@@ -33,8 +34,12 @@ CREATE TABLE IF NOT EXISTS product_details (
 
 -- Migration: run if the table already exists
 -- ALTER TABLE listings ADD COLUMN IF NOT EXISTS listed_date TEXT;
+-- ALTER TABLE listings ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Active';
+-- Backfill status from the existing is_sold flag for rows already stored:
+-- UPDATE listings SET status = CASE WHEN is_sold THEN 'Sold' ELSE 'Active' END WHERE status IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_listings_ebay_id ON listings(ebay_id);
 CREATE INDEX IF NOT EXISTS idx_listings_seller  ON listings(seller);
 CREATE INDEX IF NOT EXISTS idx_listings_is_sold ON listings(is_sold);
+CREATE INDEX IF NOT EXISTS idx_listings_status  ON listings(status);
 CREATE INDEX IF NOT EXISTS idx_listings_scraped ON listings(scraped_at DESC);
