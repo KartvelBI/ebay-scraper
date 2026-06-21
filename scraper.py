@@ -224,13 +224,18 @@ def _parse_card(item: Tag, is_sold: bool) -> dict | None:
     price_el = item.select_one(".s-card__price")
     price = _parse_price(_text(price_el))
 
-    # Sold date from caption
+    # Sold date from caption — a "Sold …" caption also means the item is sold,
+    # regardless of how the scrape was launched.
     sold_date = None
+    caption_sold = False
     caption_el = item.select_one(".s-card__caption span.su-styled-text")
     if caption_el:
         cap = _text(caption_el) or ""
         if "Sold" in cap:
+            caption_sold = True
             sold_date = cap.replace("Sold", "").strip()
+
+    sold = bool(is_sold) or caption_sold
 
     # Bids and shipping from attribute rows
     bids = None
@@ -277,8 +282,8 @@ def _parse_card(item: Tag, is_sold: bool) -> dict | None:
         "location": None,
         "shipping": shipping,
         "bids": bids,
-        "is_sold": 1 if is_sold else 0,
-        "status": "Sold" if is_sold else "Active",
+        "is_sold": 1 if sold else 0,
+        "status": "Sold" if sold else "Active",
         "sold_date": sold_date,
         "listed_date": listed_date,
         "scraped_at": now.isoformat(),
