@@ -351,8 +351,7 @@ def scrape_search(keyword: str, pages: int = 0, sold_only: bool = False,
     def url_for_page(p: int) -> str:
         params: dict = {"_nkw": keyword, "_pgn": p, "_ipg": 240}
         if sold_only:
-            params["LH_Complete"] = "1"
-            params["LH_Sold"] = "1"
+            params["LH_Sold"] = "1"  # eBay's "Sold Items" filter
         return f"{BASE_URL}/sch/i.html?{urlencode(params)}"
 
     with _browser_session() as page:
