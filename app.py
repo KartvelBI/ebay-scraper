@@ -671,6 +671,9 @@ def _bulk_save(listings: list[dict], store_name: str = None) -> int:
     db.init_db()
     saved = 0
     for item in listings:
+        if sc._stop_requested:
+            print("  Stop requested — halting save mid-batch.")
+            break
         try:
             item["store_name"] = store_name
             db.upsert_listing(item)
