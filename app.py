@@ -203,7 +203,9 @@ def listings():
 @app.route("/listing/<int:listing_id>")
 def listing_detail(listing_id):
     db.init_db()
-    listing = db.get_listing_by_id(listing_id)
+    src = request.args.get("src", "")
+    source = {"sold": db.SOLD_TABLE, "active": db.ACTIVE_TABLE}.get(src)
+    listing = db.get_listing_by_id(listing_id, source=source)
     if not listing:
         flash("Listing not found.", "error")
         return redirect(url_for("listings"))
