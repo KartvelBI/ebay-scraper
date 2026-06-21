@@ -228,10 +228,10 @@ _SEARCH_FIELDS = """
   <label class="form-label fw-semibold">Pages to scrape</label>
   <select name="pages" class="form-select" id="pagesSelect" onchange="toggleCustomPages(this)">
     <option value="0">All pages (auto)</option>
-    <option value="1">1 page (~60 items)</option>
-    <option value="3">3 pages (~180 items)</option>
-    <option value="5">5 pages (~300 items)</option>
-    <option value="10">10 pages (~600 items)</option>
+    <option value="1">1 page (~240 items)</option>
+    <option value="3">3 pages (~720 items)</option>
+    <option value="5">5 pages (~1,200 items)</option>
+    <option value="10">10 pages (~2,400 items)</option>
     <option value="custom">Custom…</option>
   </select>
 </div>
@@ -277,7 +277,7 @@ def scrape_search():
         tips=[
             "Use specific keywords for better results.",
             "Sold/completed items are great for price research.",
-            "Each page returns ~60 listings.",
+            "Each page returns ~240 listings.",
             "'All pages (auto)' keeps going until eBay has no more results.",
             "Large searches (1000+ items) can take a few minutes — the button will spin.",
         ],
@@ -328,10 +328,10 @@ _SELLER_FIELDS = """
   <label class="form-label fw-semibold">Pages per seller</label>
   <select name="pages" class="form-select" id="pagesSelect" onchange="toggleCustomPages(this)">
     <option value="0">All pages (auto)</option>
-    <option value="1">1 page (~60 items)</option>
-    <option value="3">3 pages (~180 items)</option>
-    <option value="5">5 pages (~300 items)</option>
-    <option value="10">10 pages (~600 items)</option>
+    <option value="1">1 page (~240 items)</option>
+    <option value="3">3 pages (~720 items)</option>
+    <option value="5">5 pages (~1,200 items)</option>
+    <option value="10">10 pages (~2,400 items)</option>
     <option value="custom">Custom…</option>
   </select>
 </div>
@@ -469,10 +469,10 @@ _URL_FIELDS = """
   <label class="form-label fw-semibold">Pages to scrape</label>
   <select name="pages" class="form-select" id="pagesSelect" onchange="toggleCustomPages(this)">
     <option value="0">All pages (auto)</option>
-    <option value="1">1 page (~60 items)</option>
-    <option value="3">3 pages (~180 items)</option>
-    <option value="5">5 pages (~300 items)</option>
-    <option value="10">10 pages (~600 items)</option>
+    <option value="1">1 page (~240 items)</option>
+    <option value="3">3 pages (~720 items)</option>
+    <option value="5">5 pages (~1,200 items)</option>
+    <option value="10">10 pages (~2,400 items)</option>
     <option value="custom">Custom…</option>
   </select>
 </div>
@@ -515,7 +515,7 @@ def scrape_url():
             "Sold/active status is auto-detected from URL parameters (LH_Sold, LH_Complete).",
             "You can pre-filter on eBay (condition, price, location) before copying the URL.",
             "'All pages (auto)' keeps going until eBay runs out of results.",
-            "Each page returns ~60 listings.",
+            "Each page returns ~240 listings.",
         ],
     )
 

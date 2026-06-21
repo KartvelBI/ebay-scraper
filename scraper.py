@@ -80,6 +80,71 @@ def _has_next_page(soup: BeautifulSoup) -> bool:
     return bool(soup.select_one("a.pagination__next"))
 
 
+def _fetch_with_retry(page, url: str, retries: int = 2) -> BeautifulSoup | None:
+    """Fetch a results page, retrying with backoff on a failed/empty (likely
+    throttled) response. Returns the last soup attempted (may have no cards)."""
+    soup = None
+    for attempt in range(retries + 1):
+        soup = _fetch(page, url)
+        if soup and soup.select_one("li.s-card"):
+            return soup
+        if attempt < retries:
+            wait = random.uniform(4.0, 7.0) * (attempt + 1)
+            print(f"  No cards (attempt {attempt + 1}/{retries + 1}) — "
+                  f"backing off {wait:.0f}s and retrying")
+            time.sleep(wait)
+    return soup
+
+
+def _paginated_collect(page, url_for_page, *, is_sold: bool, pages: int,
+                       _on_page=None, seller: str | None = None) -> list[dict]:
+    """Shared pagination loop: retries throttled pages and terminates when a
+    page yields no NEW items (eBay re-serves the last page past the end)."""
+    results: list[dict] = []
+    seen: set[str] = set()
+    auto = pages == 0
+    max_p = 100 if auto else pages
+
+    for p in range(1, max_p + 1):
+        if _stop_requested:
+            print("  Stop requested — halting.")
+            break
+
+        url = url_for_page(p)
+        print(f"  Page {p}: {url}")
+
+        soup = _fetch_with_retry(page, url)
+        cards = soup.select("li.s-card") if soup else []
+        if not cards:
+            print(f"  Page {p}: no listing cards after retries — "
+                  "stopping (end of results or blocked by eBay).")
+            break
+
+        new = 0
+        for card in cards:
+            data = _parse_card(card, is_sold=is_sold)
+            if not data or data["url"] in seen:
+                continue
+            seen.add(data["url"])
+            if seller and not data.get("seller"):
+                data["seller"] = seller
+            results.append(data)
+            new += 1
+
+        print(f"  Collected {len(results)} listings so far (+{new} new).")
+        if _on_page:
+            _on_page(page=p, collected=len(results))
+
+        if new == 0:
+            print("  No new items on this page — reached the end. Stopping.")
+            break
+        if auto and not _has_next_page(soup):
+            print("  Last page reached.")
+            break
+
+    return results
+
+
 def _clean_url(url: str) -> str:
     return url.split("?")[0] if url else ""
 
@@ -219,88 +284,26 @@ def _parse_card(item: Tag, is_sold: bool) -> dict | None:
 def scrape_search(keyword: str, pages: int = 0, sold_only: bool = False,
                   _on_page=None) -> list[dict]:
     """Scrape search results. pages=0 auto-paginates all available pages (up to 100)."""
-    results = []
-    auto = pages == 0
-    max_p = 100 if auto else pages
+    def url_for_page(p: int) -> str:
+        params: dict = {"_nkw": keyword, "_pgn": p, "_ipg": 240}
+        if sold_only:
+            params["LH_Complete"] = "1"
+            params["LH_Sold"] = "1"
+        return f"{BASE_URL}/sch/i.html?{urlencode(params)}"
 
     with _browser_session() as page:
-        for p in range(1, max_p + 1):
-            if _stop_requested:
-                print("  Stop requested — halting.")
-                break
-
-            params: dict = {"_nkw": keyword, "_pgn": p}
-            if sold_only:
-                params["LH_Complete"] = "1"
-                params["LH_Sold"] = "1"
-            url = f"{BASE_URL}/sch/i.html?{urlencode(params)}"
-            print(f"  Page {p}: {url}")
-
-            soup = _fetch(page, url)
-            if not soup:
-                break
-
-            cards = soup.select("li.s-card")
-            if not cards:
-                print("  No listing cards found — stopping.")
-                break
-
-            for card in cards:
-                data = _parse_card(card, is_sold=sold_only)
-                if data:
-                    results.append(data)
-
-            print(f"  Collected {len(results)} listings so far.")
-            if _on_page:
-                _on_page(page=p, collected=len(results))
-
-            if auto and not _has_next_page(soup):
-                print("  Last page reached.")
-                break
-
-    return results
+        return _paginated_collect(page, url_for_page, is_sold=sold_only,
+                                  pages=pages, _on_page=_on_page)
 
 
 def scrape_seller(seller: str, pages: int = 0, _on_page=None) -> list[dict]:
     """Scrape seller listings. pages=0 auto-paginates all available pages."""
-    results = []
-    auto = pages == 0
-    max_p = 100 if auto else pages
+    def url_for_page(p: int) -> str:
+        return f"{BASE_URL}/sch/{seller}/m.html?_pgn={p}&_ipg=240"
 
     with _browser_session() as page:
-        for p in range(1, max_p + 1):
-            if _stop_requested:
-                print("  Stop requested — halting.")
-                break
-
-            url = f"{BASE_URL}/sch/{seller}/m.html?_pgn={p}"
-            print(f"  Seller page {p}: {url}")
-
-            soup = _fetch(page, url)
-            if not soup:
-                break
-
-            cards = soup.select("li.s-card")
-            if not cards:
-                print("  No listing cards found — stopping.")
-                break
-
-            for card in cards:
-                data = _parse_card(card, is_sold=False)
-                if data:
-                    if not data["seller"]:
-                        data["seller"] = seller
-                    results.append(data)
-
-            print(f"  Collected {len(results)} listings so far.")
-            if _on_page:
-                _on_page(page=p, collected=len(results))
-
-            if auto and not _has_next_page(soup):
-                print("  Last page reached.")
-                break
-
-    return results
+        return _paginated_collect(page, url_for_page, is_sold=False,
+                                  pages=pages, _on_page=_on_page, seller=seller)
 
 
 def scrape_product(url: str) -> tuple[dict | None, dict | None]:
@@ -432,43 +435,14 @@ def scrape_from_url(url: str, pages: int = 0, _on_page=None) -> list[dict]:
     parsed = urlparse(url)
     qs = parse_qs(parsed.query, keep_blank_values=True)
     is_sold = bool(qs.get("LH_Sold") or qs.get("LH_Complete"))
-    qs["_sop"] = ["10"]  # sort: newly listed
+    qs["_sop"] = ["10"]   # sort: newly listed
+    qs["_ipg"] = ["240"]  # 240 items per page (eBay max)
 
-    results = []
-    auto = pages == 0
-    max_p = 100 if auto else pages
+    def url_for_page(p: int) -> str:
+        page_qs = {k: v[0] for k, v in qs.items()}
+        page_qs["_pgn"] = str(p)
+        return parsed._replace(query=urlencode(page_qs)).geturl()
 
     with _browser_session() as page:
-        for p in range(1, max_p + 1):
-            if _stop_requested:
-                print("  Stop requested — halting.")
-                break
-
-            qs["_pgn"] = [str(p)]
-            paged_qs = {k: v[0] for k, v in qs.items()}
-            paged_url = parsed._replace(query=urlencode(paged_qs)).geturl()
-            print(f"  Page {p}: {paged_url}")
-
-            soup = _fetch(page, paged_url)
-            if not soup:
-                break
-
-            cards = soup.select("li.s-card")
-            if not cards:
-                print("  No listing cards found — stopping.")
-                break
-
-            for card in cards:
-                data = _parse_card(card, is_sold=is_sold)
-                if data:
-                    results.append(data)
-
-            print(f"  Collected {len(results)} listings so far.")
-            if _on_page:
-                _on_page(page=p, collected=len(results))
-
-            if auto and not _has_next_page(soup):
-                print("  Last page reached.")
-                break
-
-    return results
+        return _paginated_collect(page, url_for_page, is_sold=is_sold,
+                                  pages=pages, _on_page=_on_page)
