@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import time
 import random
@@ -24,6 +25,32 @@ def request_stop() -> None:
 def clear_stop() -> None:
     global _stop_requested
     _stop_requested = False
+
+
+def _proxy_config() -> dict | None:
+    """Build a Playwright proxy config from env vars, or None if unset.
+
+    Set PROXY_URL to a full proxy URL (creds may be embedded), e.g.
+    `http://user:pass@host:port`. Alternatively use PROXY_SERVER plus
+    PROXY_USERNAME / PROXY_PASSWORD.
+    """
+    url = os.environ.get("PROXY_URL") or os.environ.get("PROXY_SERVER")
+    if not url:
+        return None
+    if "://" not in url:
+        url = "http://" + url
+    parsed = urlparse(url)
+    server = f"{parsed.scheme}://{parsed.hostname}"
+    if parsed.port:
+        server += f":{parsed.port}"
+    cfg: dict = {"server": server}
+    user = parsed.username or os.environ.get("PROXY_USERNAME")
+    pwd = parsed.password or os.environ.get("PROXY_PASSWORD")
+    if user:
+        cfg["username"] = user
+    if pwd:
+        cfg["password"] = pwd
+    return cfg
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -38,11 +65,16 @@ _UA = (
 @contextmanager
 def _browser_session():
     with sync_playwright() as pw:
-        print("  Launching headless Chromium…")
+        proxy = _proxy_config()
+        if proxy:
+            print(f"  Launching headless Chromium via proxy {proxy['server']}…")
+        else:
+            print("  Launching headless Chromium…")
         browser = pw.chromium.launch(
             headless=True,
             args=["--disable-blink-features=AutomationControlled"],
             timeout=60000,  # fail fast instead of hanging if launch stalls
+            proxy=proxy,    # None = direct connection
         )
         try:
             ctx = browser.new_context(
