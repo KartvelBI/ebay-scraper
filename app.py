@@ -300,6 +300,77 @@ def scrape_search():
 
 
 # ---------------------------------------------------------------------------
+# Scrape — Sold items only
+# ---------------------------------------------------------------------------
+
+_SOLD_FIELDS = """
+<div class="mb-3">
+  <label class="form-label fw-semibold">Keyword <span class="text-danger">*</span></label>
+  <input name="keyword" class="form-control" placeholder='e.g. "mercedes r170 speakers"' required />
+</div>
+<div class="mb-3">
+  <label class="form-label fw-semibold">Store Name <span class="text-muted fw-normal">(optional label for this scrape)</span></label>
+  <input name="store_name" class="form-control" placeholder='e.g. "Sold price research"' />
+</div>
+<div class="mb-3">
+  <label class="form-label fw-semibold">Pages to scrape</label>
+  <select name="pages" class="form-select" id="pagesSelect" onchange="toggleCustomPages(this)">
+    <option value="0">All pages (auto)</option>
+    <option value="1">1 page (~240 items)</option>
+    <option value="3">3 pages (~720 items)</option>
+    <option value="5">5 pages (~1,200 items)</option>
+    <option value="10">10 pages (~2,400 items)</option>
+    <option value="custom">Custom…</option>
+  </select>
+</div>
+<div class="mb-3 d-none" id="customPagesWrap">
+  <label class="form-label fw-semibold">Custom page count</label>
+  <input name="pages_custom" type="number" class="form-control" value="2" min="1" max="100" />
+</div>
+<div class="alert border flash-success mb-0" style="font-size:.85rem;">
+  <i class="bi bi-check-circle me-1"></i> This scrapes <strong>sold / completed</strong> listings only.
+</div>
+<script>
+function toggleCustomPages(sel) {
+  document.getElementById('customPagesWrap').classList.toggle('d-none', sel.value !== 'custom');
+}
+</script>
+"""
+
+@app.route("/scrape/sold", methods=["GET", "POST"])
+def scrape_sold():
+    if request.method == "POST":
+        if _JOB["running"]:
+            flash("A scrape is already in progress — stop it first or wait.", "error")
+            return redirect(url_for("scrape_progress_page"))
+        keyword    = request.form.get("keyword", "").strip()
+        store_name = request.form.get("store_name", "").strip() or None
+        pages      = _parse_pages(request.form)
+        if not keyword:
+            flash("Please enter a keyword.", "error")
+            return redirect(url_for("scrape_sold"))
+        _jset(running=True, done=False, task="Sold Items", detail=keyword,
+              page=0, collected=0, saved=0, log=[], error=None, stop_requested=False)
+        # sold=True forces eBay's Sold/Completed filter for this scrape.
+        threading.Thread(target=_run_search, args=(keyword, pages, True, store_name), daemon=True).start()
+        return redirect(url_for("scrape_progress_page"))
+
+    return render_template(
+        "scrape.html",
+        form_title="Scrape Sold Items",
+        form_desc="Scrape sold / completed eBay listings by keyword — ideal for historical price research.",
+        card_class="search-card",
+        form_fields=_SOLD_FIELDS,
+        tips=[
+            "Only sold/completed listings are collected (eBay's 'Sold Items' filter).",
+            "Each row is saved with status = Sold (into the sold table).",
+            "Great for researching what items actually sold for.",
+            "'All pages (auto)' keeps going until eBay runs out of results.",
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Scrape — Seller
 # ---------------------------------------------------------------------------
 
