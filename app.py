@@ -1,6 +1,7 @@
 import json
 import os
 import threading
+from urllib.parse import urlparse, parse_qs, urlencode
 
 from flask import Flask, flash, jsonify, redirect, render_template, request, url_for
 
@@ -303,14 +304,26 @@ def scrape_search():
 # Scrape — Sold items only
 # ---------------------------------------------------------------------------
 
+def _force_sold_url(url: str) -> str:
+    """Add eBay's 'Sold Items' filter (LH_Sold=1) to any search/store URL and
+    drop 'Completed Items' so it matches the Sold Items checkbox exactly."""
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query, keep_blank_values=True)
+    qs["LH_Sold"] = ["1"]
+    qs.pop("LH_Complete", None)
+    flat = {k: v[0] for k, v in qs.items()}
+    return parsed._replace(query=urlencode(flat)).geturl()
+
+
 _SOLD_FIELDS = """
 <div class="mb-3">
-  <label class="form-label fw-semibold">Keyword <span class="text-danger">*</span></label>
-  <input name="keyword" class="form-control" placeholder='e.g. "mercedes r170 speakers"' required />
+  <label class="form-label fw-semibold">eBay search / store URL <span class="text-danger">*</span></label>
+  <input name="url" class="form-control" placeholder="https://www.ebay.com/sch/i.html?_ssn=autohubshop" required />
+  <div class="form-text">Paste any eBay search or store URL — the <strong>Sold Items</strong> filter is applied automatically.</div>
 </div>
 <div class="mb-3">
   <label class="form-label fw-semibold">Store Name <span class="text-muted fw-normal">(optional label for this scrape)</span></label>
-  <input name="store_name" class="form-control" placeholder='e.g. "Sold price research"' />
+  <input name="store_name" class="form-control" placeholder='e.g. "autohubshop"' />
 </div>
 <div class="mb-3">
   <label class="form-label fw-semibold">Pages to scrape</label>
@@ -328,7 +341,7 @@ _SOLD_FIELDS = """
   <input name="pages_custom" type="number" class="form-control" value="2" min="1" max="100" />
 </div>
 <div class="alert border flash-success mb-0" style="font-size:.85rem;">
-  <i class="bi bi-check-circle me-1"></i> This scrapes <strong>sold / completed</strong> listings only.
+  <i class="bi bi-check-circle me-1"></i> Scrapes <strong>sold</strong> listings only and saves them to the <strong>sold</strong> table.
 </div>
 <script>
 function toggleCustomPages(sel) {
@@ -343,28 +356,29 @@ def scrape_sold():
         if _JOB["running"]:
             flash("A scrape is already in progress — stop it first or wait.", "error")
             return redirect(url_for("scrape_progress_page"))
-        keyword    = request.form.get("keyword", "").strip()
+        url        = request.form.get("url", "").strip()
         store_name = request.form.get("store_name", "").strip() or None
         pages      = _parse_pages(request.form)
-        if not keyword:
-            flash("Please enter a keyword.", "error")
+        if not url:
+            flash("Please enter an eBay URL.", "error")
             return redirect(url_for("scrape_sold"))
-        _jset(running=True, done=False, task="Sold Items", detail=keyword,
+        sold_url = _force_sold_url(url)
+        _jset(running=True, done=False, task="Sold Items", detail=sold_url,
               page=0, collected=0, saved=0, log=[], error=None, stop_requested=False)
-        # sold=True forces eBay's Sold/Completed filter for this scrape.
-        threading.Thread(target=_run_search, args=(keyword, pages, True, store_name), daemon=True).start()
+        # scrape_from_url detects LH_Sold and routes results to the sold table.
+        threading.Thread(target=_run_url_scrape, args=(sold_url, pages, store_name), daemon=True).start()
         return redirect(url_for("scrape_progress_page"))
 
     return render_template(
         "scrape.html",
         form_title="Scrape Sold Items",
-        form_desc="Scrape sold / completed eBay listings by keyword — ideal for historical price research.",
+        form_desc="Paste an eBay search or store URL — sold listings are scraped and saved to the sold table.",
         card_class="search-card",
         form_fields=_SOLD_FIELDS,
         tips=[
-            "Only sold/completed listings are collected (eBay's 'Sold Items' filter).",
-            "Each row is saved with status = Sold (into the sold table).",
-            "Great for researching what items actually sold for.",
+            "Works with any eBay search or seller-store URL.",
+            "eBay's 'Sold Items' filter (LH_Sold=1) is forced automatically.",
+            "Each row is saved with status = Sold into the sold table.",
             "'All pages (auto)' keeps going until eBay runs out of results.",
         ],
     )
