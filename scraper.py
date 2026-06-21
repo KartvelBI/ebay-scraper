@@ -101,9 +101,9 @@ def _browser_session():
 
 def _fetch(page, url: str, wait_selector: str = "li.s-card") -> BeautifulSoup | None:
     try:
-        page.goto(url, wait_until="domcontentloaded", timeout=25000)
+        page.goto(url, wait_until="domcontentloaded", timeout=15000)
         try:
-            page.wait_for_selector(wait_selector, timeout=10000)
+            page.wait_for_selector(wait_selector, timeout=6000)
         except PWTimeout:
             pass  # page may still have content
         time.sleep(random.uniform(1.0, 2.0))
