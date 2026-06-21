@@ -77,6 +77,7 @@ def _run_search(keyword: str, pages: int, sold: bool, store_name) -> None:
               page=0, collected=0, saved=0, log=[], error=None, stop_requested=False)
         _jlog(f'Scraping eBay search: "{keyword}"')
         sc.clear_stop()
+        db.init_db()
         listings = sc.scrape_search(keyword, pages=pages, sold_only=sold,
                                     _on_page=_on_page, _on_batch=saver)
         _jlog(f"Done — {len(listings)} scraped, {saver.total} saved to database.")
@@ -92,6 +93,7 @@ def _run_seller(sellers: list, store_names: list, pages: int) -> None:
         _jset(running=True, done=False, task="Seller", detail=f"{total} seller(s)",
               page=0, collected=0, saved=0, log=[], error=None, stop_requested=False)
         sc.clear_stop()
+        db.init_db()
         total_saved = 0
         for i, seller in enumerate(sellers):
             if sc._stop_requested:
@@ -120,6 +122,7 @@ def _run_url_scrape(url: str, pages: int, store_name) -> None:
               page=0, collected=0, saved=0, log=[], error=None, stop_requested=False)
         _jlog(f"Scraping eBay URL: {url}")
         sc.clear_stop()
+        db.init_db()
         listings = sc.scrape_from_url(url, pages=pages, _on_page=_on_page, _on_batch=saver)
         _jlog(f"Done — {len(listings)} scraped, {saver.total} saved to database.")
         _jset(saved=saver.total, done=True, running=False)
@@ -134,6 +137,7 @@ def _run_product(url: str, store_name) -> None:
               page=0, collected=0, saved=0, log=[], error=None, stop_requested=False)
         _jlog(f"Scraping: {url}")
         sc.clear_stop()
+        db.init_db()
         listing, detail = sc.scrape_product(url)
         if not listing:
             _jlog("Failed to scrape that URL.")
@@ -668,19 +672,25 @@ def _parse_pages(form) -> int:
 
 
 def _bulk_save(listings: list[dict], store_name: str = None) -> int:
-    db.init_db()
-    saved = 0
+    if sc._stop_requested or not listings:
+        return 0
     for item in listings:
-        if sc._stop_requested:
-            print("  Stop requested — halting save mid-batch.")
-            break
-        try:
-            item["store_name"] = store_name
-            db.upsert_listing(item)
-            saved += 1
-        except Exception as exc:
-            print(f"  DB error: {exc}")
-    return saved
+        item["store_name"] = store_name
+    # One batched request per page is far faster than a round-trip per row.
+    try:
+        return db.bulk_upsert_listings(listings)
+    except Exception as exc:
+        print(f"  Bulk save failed ({exc}); retrying row-by-row…")
+        saved = 0
+        for item in listings:
+            if sc._stop_requested:
+                break
+            try:
+                db.upsert_listing(item)
+                saved += 1
+            except Exception as e:
+                print(f"  DB error: {e}")
+        return saved
 
 
 # ---------------------------------------------------------------------------

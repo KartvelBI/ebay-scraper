@@ -10,8 +10,16 @@ _SUPABASE_URL = os.environ["SUPABASE_URL"]
 _SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 
 
+_client: Client | None = None
+
+
 def _db() -> Client:
-    return create_client(_SUPABASE_URL, _SUPABASE_KEY)
+    # Reuse a single client — creating one per call adds latency to every
+    # query and every upsert.
+    global _client
+    if _client is None:
+        _client = create_client(_SUPABASE_URL, _SUPABASE_KEY)
+    return _client
 
 
 # Active listings live in `listings`; sold/completed listings live in `sold`.
@@ -45,8 +53,8 @@ def init_db():
 # Writes
 # ---------------------------------------------------------------------------
 
-def upsert_listing(data: dict) -> int:
-    row = {
+def _row_for(data: dict) -> dict:
+    return {
         "ebay_id":    data.get("ebay_id"),
         "url":        data["url"],
         "title":      data["title"],
@@ -67,9 +75,33 @@ def upsert_listing(data: dict) -> int:
         "model":      data.get("model"),
         "scraped_at": data.get("scraped_at"),
     }
+
+
+def upsert_listing(data: dict) -> int:
     table = _table_for(data.get("is_sold"))
-    result = _db().table(table).upsert(row, on_conflict="url").execute()
+    result = _db().table(table).upsert(_row_for(data), on_conflict="url").execute()
     return result.data[0]["id"]
+
+
+def bulk_upsert_listings(listings: list[dict]) -> int:
+    """Upsert many listings in one request per target table. Far faster than
+    one round-trip per row. Returns the number of rows written."""
+    # Group by target table and de-dupe within each batch by url — Postgres
+    # ON CONFLICT can't touch the same row twice in a single statement.
+    groups: dict[str, dict[str, dict]] = {}
+    for data in listings:
+        if not data.get("url"):
+            continue
+        table = _table_for(data.get("is_sold"))
+        groups.setdefault(table, {})[data["url"]] = _row_for(data)  # last wins
+
+    total = 0
+    for table, rows_by_url in groups.items():
+        rows = list(rows_by_url.values())
+        if rows:
+            _db().table(table).upsert(rows, on_conflict="url").execute()
+            total += len(rows)
+    return total
 
 
 def upsert_product_detail(data: dict):
