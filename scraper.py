@@ -97,9 +97,14 @@ def _fetch_with_retry(page, url: str, retries: int = 2) -> BeautifulSoup | None:
 
 
 def _paginated_collect(page, url_for_page, *, is_sold: bool, pages: int,
-                       _on_page=None, seller: str | None = None) -> list[dict]:
+                       _on_page=None, _on_batch=None,
+                       seller: str | None = None) -> list[dict]:
     """Shared pagination loop: retries throttled pages and terminates when a
-    page yields no NEW items (eBay re-serves the last page past the end)."""
+    page yields no NEW items (eBay re-serves the last page past the end).
+
+    If `_on_batch` is given, each page's new listings are handed to it as they
+    are collected, so data is persisted incrementally and survives an early
+    stop or crash mid-run."""
     results: list[dict] = []
     seen: set[str] = set()
     auto = pages == 0
@@ -120,7 +125,7 @@ def _paginated_collect(page, url_for_page, *, is_sold: bool, pages: int,
                   "stopping (end of results or blocked by eBay).")
             break
 
-        new = 0
+        batch: list[dict] = []
         for card in cards:
             data = _parse_card(card, is_sold=is_sold)
             if not data or data["url"] in seen:
@@ -129,9 +134,12 @@ def _paginated_collect(page, url_for_page, *, is_sold: bool, pages: int,
             if seller and not data.get("seller"):
                 data["seller"] = seller
             results.append(data)
-            new += 1
+            batch.append(data)
 
+        new = len(batch)
         print(f"  Collected {len(results)} listings so far (+{new} new).")
+        if _on_batch and batch:
+            _on_batch(batch)
         if _on_page:
             _on_page(page=p, collected=len(results))
 
@@ -282,7 +290,7 @@ def _parse_card(item: Tag, is_sold: bool) -> dict | None:
 # ---------------------------------------------------------------------------
 
 def scrape_search(keyword: str, pages: int = 0, sold_only: bool = False,
-                  _on_page=None) -> list[dict]:
+                  _on_page=None, _on_batch=None) -> list[dict]:
     """Scrape search results. pages=0 auto-paginates all available pages (up to 100)."""
     def url_for_page(p: int) -> str:
         params: dict = {"_nkw": keyword, "_pgn": p, "_ipg": 240}
@@ -293,17 +301,17 @@ def scrape_search(keyword: str, pages: int = 0, sold_only: bool = False,
 
     with _browser_session() as page:
         return _paginated_collect(page, url_for_page, is_sold=sold_only,
-                                  pages=pages, _on_page=_on_page)
+                                  pages=pages, _on_page=_on_page, _on_batch=_on_batch)
 
 
-def scrape_seller(seller: str, pages: int = 0, _on_page=None) -> list[dict]:
+def scrape_seller(seller: str, pages: int = 0, _on_page=None, _on_batch=None) -> list[dict]:
     """Scrape seller listings. pages=0 auto-paginates all available pages."""
     def url_for_page(p: int) -> str:
         return f"{BASE_URL}/sch/{seller}/m.html?_pgn={p}&_ipg=240"
 
     with _browser_session() as page:
-        return _paginated_collect(page, url_for_page, is_sold=False,
-                                  pages=pages, _on_page=_on_page, seller=seller)
+        return _paginated_collect(page, url_for_page, is_sold=False, pages=pages,
+                                  _on_page=_on_page, _on_batch=_on_batch, seller=seller)
 
 
 def scrape_product(url: str) -> tuple[dict | None, dict | None]:
@@ -430,7 +438,7 @@ def scrape_product(url: str) -> tuple[dict | None, dict | None]:
         return listing, detail
 
 
-def scrape_from_url(url: str, pages: int = 0, _on_page=None) -> list[dict]:
+def scrape_from_url(url: str, pages: int = 0, _on_page=None, _on_batch=None) -> list[dict]:
     """Scrape listings from any eBay search/browse URL. Paginates via _pgn param."""
     parsed = urlparse(url)
     qs = parse_qs(parsed.query, keep_blank_values=True)
@@ -445,4 +453,4 @@ def scrape_from_url(url: str, pages: int = 0, _on_page=None) -> list[dict]:
 
     with _browser_session() as page:
         return _paginated_collect(page, url_for_page, is_sold=is_sold,
-                                  pages=pages, _on_page=_on_page)
+                                  pages=pages, _on_page=_on_page, _on_batch=_on_batch)

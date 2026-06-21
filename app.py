@@ -53,22 +53,36 @@ def _on_page(page: int, collected: int) -> None:
     _jset(page=page, collected=collected)
 
 
+def _make_batch_saver(store_name=None, base: int = 0):
+    """Return an _on_batch(listings) callback that saves each page as it is
+    scraped, so collected data is persisted incrementally and survives an
+    early stop or crash. `base` offsets the live counter for multi-part jobs.
+    The returned callable exposes `.total` (rows saved by this saver)."""
+    def _save(batch: list[dict]) -> None:
+        n = _bulk_save(batch, store_name=store_name)
+        _save.total += n
+        _jset(saved=base + _save.total)
+        _jlog(f"Saved {n} this page (running total: {base + _save.total})")
+    _save.total = 0
+    return _save
+
+
 # Background worker functions
 
 def _run_search(keyword: str, pages: int, sold: bool, store_name) -> None:
+    saver = _make_batch_saver(store_name)
     try:
         _jset(running=True, done=False, task="Search", detail=keyword,
               page=0, collected=0, saved=0, log=[], error=None, stop_requested=False)
         _jlog(f'Scraping eBay search: "{keyword}"')
         sc.clear_stop()
-        listings = sc.scrape_search(keyword, pages=pages, sold_only=sold, _on_page=_on_page)
-        _jlog(f"Scrape complete — {len(listings)} listings found")
-        saved = _bulk_save(listings, store_name=store_name)
-        _jlog(f"Saved {saved} to database. Done!")
-        _jset(saved=saved, done=True, running=False)
+        listings = sc.scrape_search(keyword, pages=pages, sold_only=sold,
+                                    _on_page=_on_page, _on_batch=saver)
+        _jlog(f"Done — {len(listings)} scraped, {saver.total} saved to database.")
+        _jset(saved=saver.total, done=True, running=False)
     except Exception as exc:
-        _jlog(f"Error: {exc}")
-        _jset(error=str(exc), done=True, running=False)
+        _jlog(f"Error (saved {saver.total} before failing): {exc}")
+        _jset(saved=saver.total, error=str(exc), done=True, running=False)
 
 
 def _run_seller(sellers: list, store_names: list, pages: int) -> None:
@@ -85,11 +99,11 @@ def _run_seller(sellers: list, store_names: list, pages: int) -> None:
             store_name = (store_names[i].strip() if i < len(store_names) else "") or seller
             _jset(detail=f"{seller} ({i+1}/{total})", page=0, collected=0)
             _jlog(f"--- Seller {i+1}/{total}: {seller} (store: {store_name}) ---")
-            listings = sc.scrape_seller(seller, pages=pages, _on_page=_on_page)
-            _jlog(f"Found {len(listings)} listings for {seller}")
-            saved = _bulk_save(listings, store_name=store_name)
-            total_saved += saved
-            _jlog(f"Saved {saved} for {seller} | total so far: {total_saved}")
+            saver = _make_batch_saver(store_name, base=total_saved)
+            listings = sc.scrape_seller(seller, pages=pages,
+                                        _on_page=_on_page, _on_batch=saver)
+            total_saved += saver.total
+            _jlog(f"Saved {saver.total} for {seller} | total so far: {total_saved}")
             _jset(saved=total_saved)
         _jlog(f"All done — {total_saved} total listings saved.")
         _jset(done=True, running=False)
@@ -99,19 +113,18 @@ def _run_seller(sellers: list, store_names: list, pages: int) -> None:
 
 
 def _run_url_scrape(url: str, pages: int, store_name) -> None:
+    saver = _make_batch_saver(store_name)
     try:
         _jset(running=True, done=False, task="URL Scrape", detail=url,
               page=0, collected=0, saved=0, log=[], error=None, stop_requested=False)
         _jlog(f"Scraping eBay URL: {url}")
         sc.clear_stop()
-        listings = sc.scrape_from_url(url, pages=pages, _on_page=_on_page)
-        _jlog(f"Scrape complete — {len(listings)} listings found")
-        saved = _bulk_save(listings, store_name=store_name)
-        _jlog(f"Saved {saved} to database. Done!")
-        _jset(saved=saved, done=True, running=False)
+        listings = sc.scrape_from_url(url, pages=pages, _on_page=_on_page, _on_batch=saver)
+        _jlog(f"Done — {len(listings)} scraped, {saver.total} saved to database.")
+        _jset(saved=saver.total, done=True, running=False)
     except Exception as exc:
-        _jlog(f"Error: {exc}")
-        _jset(error=str(exc), done=True, running=False)
+        _jlog(f"Error (saved {saver.total} before failing): {exc}")
+        _jset(saved=saver.total, error=str(exc), done=True, running=False)
 
 
 def _run_product(url: str, store_name) -> None:
