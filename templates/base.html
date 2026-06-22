@@ -102,6 +102,16 @@
           </form>
         </div>
         {% endif %}
+
+        <span class="section-label mt-3">Account</span>
+        {% if session.email %}
+        <div class="nav-link text-truncate" title="{{ session.email }}" style="opacity:.7;cursor:default;">
+          <i class="bi bi-person-circle"></i> {{ session.email }}
+        </div>
+        {% endif %}
+        <a href="/logout" class="nav-link">
+          <i class="bi bi-box-arrow-right"></i> Log out
+        </a>
       </nav>
     </div>
 

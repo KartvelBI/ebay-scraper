@@ -1,15 +1,60 @@
+import hmac
 import json
 import os
 import threading
+from functools import wraps
 from urllib.parse import urlparse, parse_qs, urlencode
 
-from flask import Flask, flash, jsonify, redirect, render_template, request, url_for
+from flask import (Flask, flash, jsonify, redirect, render_template, request,
+                   session, url_for)
 
 import database as db
 import scraper as sc
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(24)
+
+# ---------------------------------------------------------------------------
+# Auth — single fixed user; password supplied via APP_PASSWORD env var
+# ---------------------------------------------------------------------------
+
+ALLOWED_EMAIL = "giorgi@powerbi.ge"
+
+
+def login_required(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if not session.get("logged_in"):
+            return redirect(url_for("login", next=request.path))
+        return f(*args, **kwargs)
+    return wrapper
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if session.get("logged_in"):
+        return redirect(url_for("scrape_url"))
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+        expected = os.environ.get("APP_PASSWORD")
+        if not expected:
+            flash("Login is not configured — set the APP_PASSWORD variable.", "error")
+            return redirect(url_for("login"))
+        if email == ALLOWED_EMAIL and hmac.compare_digest(password, expected):
+            session["logged_in"] = True
+            session["email"] = email
+            nxt = request.args.get("next")
+            return redirect(nxt if nxt and nxt.startswith("/") else url_for("scrape_url"))
+        flash("Invalid email or password.", "error")
+        return redirect(url_for("login"))
+    return render_template("login.html", email=ALLOWED_EMAIL)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
 
 
 @app.context_processor
@@ -160,6 +205,7 @@ def _run_product(url: str, store_name) -> None:
 # ---------------------------------------------------------------------------
 
 @app.route("/")
+@login_required
 def index():
     # App is trimmed to 3 tabs — land on the first scrape page.
     return redirect(url_for("scrape_url"))
@@ -170,6 +216,7 @@ def index():
 # ---------------------------------------------------------------------------
 
 @app.route("/listings")
+@login_required
 def listings():
     db.init_db()
     keyword    = request.args.get("keyword", "").strip()
@@ -204,6 +251,7 @@ def listings():
 # ---------------------------------------------------------------------------
 
 @app.route("/listing/<int:listing_id>")
+@login_required
 def listing_detail(listing_id):
     db.init_db()
     src = request.args.get("src", "")
@@ -269,6 +317,7 @@ function toggleCustomPages(sel) {
 """
 
 @app.route("/scrape/search", methods=["GET", "POST"])
+@login_required
 def scrape_search():
     if request.method == "POST":
         if _JOB["running"]:
@@ -353,6 +402,7 @@ function toggleCustomPages(sel) {
 """
 
 @app.route("/scrape/sold", methods=["GET", "POST"])
+@login_required
 def scrape_sold():
     if request.method == "POST":
         if _JOB["running"]:
@@ -472,6 +522,7 @@ document.getElementById('seller-rows').addEventListener('click', function (e) {
 """
 
 @app.route("/scrape/seller", methods=["GET", "POST"])
+@login_required
 def scrape_seller():
     if request.method == "POST":
         sellers     = [s.strip() for s in request.form.getlist("seller") if s.strip()]
@@ -523,6 +574,7 @@ _PRODUCT_FIELDS = """
 """
 
 @app.route("/scrape/product", methods=["GET", "POST"])
+@login_required
 def scrape_product():
     if request.method == "POST":
         url        = request.form.get("url", "").strip()
@@ -604,6 +656,7 @@ function toggleCustomPages(sel) {
 """
 
 @app.route("/scrape/url", methods=["GET", "POST"])
+@login_required
 def scrape_url():
     if request.method == "POST":
         if _JOB["running"]:
@@ -641,6 +694,7 @@ def scrape_url():
 # ---------------------------------------------------------------------------
 
 @app.route("/scrape/progress")
+@login_required
 def scrape_progress_page():
     with _JOB_LOCK:
         status = dict(_JOB)
@@ -648,12 +702,14 @@ def scrape_progress_page():
 
 
 @app.route("/scrape/status")
+@login_required
 def scrape_status_api():
     with _JOB_LOCK:
         return jsonify(dict(_JOB))
 
 
 @app.route("/scrape/stop", methods=["POST"])
+@login_required
 def scrape_stop():
     sc.request_stop()
     _jlog("Stop requested by user...")
