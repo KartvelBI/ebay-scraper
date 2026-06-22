@@ -81,6 +81,9 @@ def _browser_session():
                 user_agent=_UA,
                 viewport={"width": 1280, "height": 800},
                 locale="en-US",
+                # Scraping-API proxies intercept TLS, so cert checks must be
+                # relaxed when proxied. Direct connections stay strict.
+                ignore_https_errors=bool(proxy),
             )
             ctx.add_init_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
