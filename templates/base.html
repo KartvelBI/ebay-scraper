@@ -81,31 +81,15 @@
         <i class="bi bi-box-seam-fill text-warning"></i> eBay Scraper
       </div>
       <nav class="nav flex-column mt-2">
-        <span class="section-label">Overview</span>
-        <a href="/" class="nav-link {% if request.path == '/' %}active{% endif %}">
-          <i class="bi bi-speedometer2"></i> Dashboard
-        </a>
-        <a href="/listings" class="nav-link {% if request.path.startswith('/listings') %}active{% endif %}">
-          <i class="bi bi-table"></i> All Listings
-        </a>
         <span class="section-label">Scrape</span>
-        <a href="/scrape/search" class="nav-link {% if request.path == '/scrape/search' %}active{% endif %}">
-          <i class="bi bi-search"></i> Search
+        <a href="/scrape/url" class="nav-link {% if request.path == '/scrape/url' %}active{% endif %}">
+          <i class="bi bi-stars"></i> Scrape newly listed
         </a>
         <a href="/scrape/sold" class="nav-link {% if request.path == '/scrape/sold' %}active{% endif %}">
-          <i class="bi bi-tag-fill"></i> Sold Items
-        </a>
-        <a href="/scrape/seller" class="nav-link {% if request.path == '/scrape/seller' %}active{% endif %}">
-          <i class="bi bi-person-badge"></i> Seller
-        </a>
-        <a href="/scrape/product" class="nav-link {% if request.path == '/scrape/product' %}active{% endif %}">
-          <i class="bi bi-link-45deg"></i> Product URL
-        </a>
-        <a href="/scrape/url" class="nav-link {% if request.path == '/scrape/url' %}active{% endif %}">
-          <i class="bi bi-globe"></i> Scrape from URL
+          <i class="bi bi-tag-fill"></i> Scrape only sold
         </a>
         <a href="/scrape/progress" class="nav-link {% if request.path == '/scrape/progress' %}active{% endif %}">
-          <i class="bi bi-activity"></i> Progress
+          <i class="bi bi-activity"></i> Status
           {% if scrape_running %}<span class="badge bg-danger ms-1" style="font-size:.6rem;vertical-align:middle;">LIVE</span>{% endif %}
         </a>
 

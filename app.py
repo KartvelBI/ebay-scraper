@@ -161,10 +161,8 @@ def _run_product(url: str, store_name) -> None:
 
 @app.route("/")
 def index():
-    db.init_db()
-    stats  = db.get_stats()
-    recent = db.get_recent_listings(10)
-    return render_template("index.html", stats=stats, recent=recent)
+    # App is trimmed to 3 tabs — land on the first scrape page.
+    return redirect(url_for("scrape_url"))
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +373,7 @@ def scrape_sold():
 
     return render_template(
         "scrape.html",
-        form_title="Scrape Sold Items",
+        form_title="Scrape Only Sold",
         form_desc="Paste an eBay search or store URL — sold listings are scraped and saved to the sold table.",
         card_class="search-card",
         form_fields=_SOLD_FIELDS,
@@ -559,15 +557,26 @@ def scrape_product():
 # Scrape — URL
 # ---------------------------------------------------------------------------
 
+def _force_active_url(url: str) -> str:
+    """Strip eBay's sold/completed filters so the scrape returns active
+    (newly-listed) results, which get saved into the listings table."""
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query, keep_blank_values=True)
+    qs.pop("LH_Sold", None)
+    qs.pop("LH_Complete", None)
+    flat = {k: v[0] for k, v in qs.items()}
+    return parsed._replace(query=urlencode(flat)).geturl()
+
+
 _URL_FIELDS = """
 <div class="mb-3">
-  <label class="form-label fw-semibold">eBay search / browse URL <span class="text-danger">*</span></label>
-  <input name="url" class="form-control" placeholder="https://www.ebay.com/sch/i.html?_nkw=rolex&LH_Sold=1" required />
-  <div class="form-text">Paste any eBay search or browse URL — sold/active is detected automatically.</div>
+  <label class="form-label fw-semibold">eBay search / store URL <span class="text-danger">*</span></label>
+  <input name="url" class="form-control" placeholder="https://www.ebay.com/sch/i.html?_ssn=autohubshop" required />
+  <div class="form-text">Paste any eBay search or store URL — <strong>active (newly-listed)</strong> items are scraped.</div>
 </div>
 <div class="mb-3">
   <label class="form-label fw-semibold">Store Name <span class="text-muted fw-normal">(optional)</span></label>
-  <input name="store_name" class="form-control" placeholder='e.g. "Rolex Research"' />
+  <input name="store_name" class="form-control" placeholder='e.g. "autohubshop"' />
 </div>
 <div class="mb-3">
   <label class="form-label fw-semibold">Pages to scrape</label>
@@ -583,6 +592,9 @@ _URL_FIELDS = """
 <div class="mb-3 d-none" id="customPagesWrap">
   <label class="form-label fw-semibold">Custom page count</label>
   <input name="pages_custom" type="number" class="form-control" value="2" min="1" max="100" />
+</div>
+<div class="alert border flash-success mb-0" style="font-size:.85rem;">
+  <i class="bi bi-check-circle me-1"></i> Scrapes <strong>active / newly-listed</strong> items and saves them to the <strong>listings</strong> table.
 </div>
 <script>
 function toggleCustomPages(sel) {
@@ -603,23 +615,23 @@ def scrape_url():
         if not url:
             flash("Please enter a URL.", "error")
             return redirect(url_for("scrape_url"))
-        _jset(running=True, done=False, task="URL Scrape", detail=url,
+        active_url = _force_active_url(url)
+        _jset(running=True, done=False, task="Newly Listed", detail=active_url,
               page=0, collected=0, saved=0, log=[], error=None, stop_requested=False)
-        threading.Thread(target=_run_url_scrape, args=(url, pages, store_name), daemon=True).start()
+        threading.Thread(target=_run_url_scrape, args=(active_url, pages, store_name), daemon=True).start()
         return redirect(url_for("scrape_progress_page"))
 
     return render_template(
         "scrape.html",
-        form_title="Scrape from URL",
-        form_desc="Paste any eBay search or browse URL — sold/active status is detected automatically from the URL.",
+        form_title="Scrape Newly Listed",
+        form_desc="Paste an eBay search or store URL — active (newly-listed) items are scraped and saved to the listings table.",
         card_class="url-card",
         form_fields=_URL_FIELDS,
         tips=[
-            "Works with any eBay search URL — just copy from your browser.",
-            "Sold/active status is auto-detected from URL parameters (LH_Sold, LH_Complete).",
-            "You can pre-filter on eBay (condition, price, location) before copying the URL.",
+            "Works with any eBay search or seller-store URL.",
+            "Any sold/completed filter is stripped — only active listings are collected.",
+            "Each row is saved into the listings table (status = Active).",
             "'All pages (auto)' keeps going until eBay runs out of results.",
-            "Each page returns ~240 listings.",
         ],
     )
 
