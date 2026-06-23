@@ -62,17 +62,41 @@ _UA = (
 # Browser lifecycle
 # ---------------------------------------------------------------------------
 
+_STEALTH_JS = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+window.chrome = { runtime: {} };
+const _q = window.navigator.permissions && window.navigator.permissions.query;
+if (_q) {
+  window.navigator.permissions.query = (p) =>
+    p && p.name === 'notifications'
+      ? Promise.resolve({ state: Notification.permission })
+      : _q(p);
+}
+"""
+
+
 @contextmanager
 def _browser_session():
+    # Set HEADLESS=false (e.g. in .env) to run a visible browser — much
+    # harder for sites to flag as a bot. Default stays headless (required
+    # on a server like Railway).
+    headless = os.environ.get("HEADLESS", "true").strip().lower() not in ("false", "0", "no")
     with sync_playwright() as pw:
         proxy = _proxy_config()
+        mode = "headless" if headless else "headed"
         if proxy:
-            print(f"  Launching headless Chromium via proxy {proxy['server']}…")
+            print(f"  Launching {mode} Chromium via proxy {proxy['server']}…")
         else:
-            print("  Launching headless Chromium…")
+            print(f"  Launching {mode} Chromium…")
         browser = pw.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled"],
+            headless=headless,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ],
             timeout=60000,  # fail fast instead of hanging if launch stalls
             proxy=proxy,    # None = direct connection
         )
@@ -85,9 +109,7 @@ def _browser_session():
                 # relaxed when proxied. Direct connections stay strict.
                 ignore_https_errors=bool(proxy),
             )
-            ctx.add_init_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-            )
+            ctx.add_init_script(_STEALTH_JS)
             page = ctx.new_page()
             # Warm up — grab homepage to load cookies
             page.goto(BASE_URL, wait_until="domcontentloaded", timeout=20000)
@@ -175,8 +197,13 @@ def _paginated_collect(page, url_for_page, *, is_sold: bool, pages: int,
         soup = _fetch_with_retry(page, url)
         cards = soup.select("li.s-card") if soup else []
         if not cards:
+            title = ""
+            if soup and soup.title:
+                title = soup.title.get_text(strip=True)
             print(f"  Page {p}: no listing cards after retries — "
-                  "stopping (end of results or blocked by eBay).")
+                  f"stopping. eBay page title: '{title}' "
+                  "(if it's an 'Error'/'Security'/captcha title, the browser "
+                  "was flagged — try HEADLESS=false).")
             break
 
         batch: list[dict] = []
