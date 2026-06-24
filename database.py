@@ -203,3 +203,44 @@ def get_listing_by_id(listing_id: int, source: str = None) -> dict | None:
 def query_product_detail(listing_id: int) -> dict | None:
     result = _db().table("product_details").select("*").eq("listing_id", listing_id).execute()
     return result.data[0] if result.data else None
+
+
+# ---------------------------------------------------------------------------
+# Schedules — daily scheduled scrapes
+# ---------------------------------------------------------------------------
+
+SCHEDULES_TABLE = "schedules"
+
+
+def get_schedules(enabled_only: bool = False) -> list[dict]:
+    q = _db().table(SCHEDULES_TABLE).select("*")
+    if enabled_only:
+        q = q.eq("enabled", True)
+    return q.order("run_at").execute().data
+
+
+def create_schedule(data: dict) -> dict:
+    row = {
+        "label":       data.get("label"),
+        "scrape_type": data.get("scrape_type", "sold"),
+        "url":         data["url"],
+        "pages":       int(data.get("pages") or 0),
+        "store_name":  data.get("store_name"),
+        "run_at":      data["run_at"],          # "HH:MM"
+        "enabled":     bool(data.get("enabled", True)),
+        "last_run":    None,
+        "created_at":  data.get("created_at"),
+    }
+    return _db().table(SCHEDULES_TABLE).insert(row).execute().data[0]
+
+
+def delete_schedule(schedule_id: int) -> None:
+    _db().table(SCHEDULES_TABLE).delete().eq("id", schedule_id).execute()
+
+
+def set_schedule_enabled(schedule_id: int, enabled: bool) -> None:
+    _db().table(SCHEDULES_TABLE).update({"enabled": enabled}).eq("id", schedule_id).execute()
+
+
+def set_schedule_last_run(schedule_id: int, when: str) -> None:
+    _db().table(SCHEDULES_TABLE).update({"last_run": when}).eq("id", schedule_id).execute()

@@ -88,6 +88,9 @@
         <a href="/scrape/sold" class="nav-link {% if request.path == '/scrape/sold' %}active{% endif %}">
           <i class="bi bi-tag-fill"></i> Scrape only sold
         </a>
+        <a href="/schedule" class="nav-link {% if request.path.startswith('/schedule') %}active{% endif %}">
+          <i class="bi bi-clock-history"></i> Schedule
+        </a>
         <a href="/scrape/progress" class="nav-link {% if request.path == '/scrape/progress' %}active{% endif %}">
           <i class="bi bi-activity"></i> Status
           {% if scrape_running %}<span class="badge bg-danger ms-1" style="font-size:.6rem;vertical-align:middle;">LIVE</span>{% endif %}

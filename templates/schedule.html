@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Schedule — eBay Scraper{% endblock %}
+{% block content %}
+
+<div class="mb-4">
+  <div class="page-title">Daily Schedule</div>
+  <div class="text-muted small">
+    Runs fire once per day at the chosen time, in <strong>{{ tzname }}</strong> time
+    (server clock now: {{ now_str }}). The app must be running for a schedule to fire.
+  </div>
+</div>
+
+<div class="row g-4">
+  <!-- Add form -->
+  <div class="col-lg-5">
+    <div class="card scrape-card search-card">
+      <div class="card-body p-4">
+        <h6 class="fw-semibold mb-3"><i class="bi bi-plus-circle me-1"></i>New daily run</h6>
+        <form method="post">
+          <div class="mb-3">
+            <label class="form-label fw-semibold">Label <span class="text-muted fw-normal">(optional)</span></label>
+            <input name="label" class="form-control" placeholder="e.g. autohubshop sold" />
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-semibold">What to scrape</label>
+            <select name="scrape_type" class="form-select">
+              <option value="sold">Only sold → sold table</option>
+              <option value="newly">Newly listed → listings table</option>
+            </select>
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-semibold">eBay search / store URL <span class="text-danger">*</span></label>
+            <input name="url" class="form-control" placeholder="https://www.ebay.com/sch/i.html?_ssn=autohubshop" required />
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-semibold">Store Name <span class="text-muted fw-normal">(optional)</span></label>
+            <input name="store_name" class="form-control" placeholder="e.g. autohubshop" />
+          </div>
+          <div class="row g-2">
+            <div class="col-7 mb-3">
+              <label class="form-label fw-semibold">Pages</label>
+              <select name="pages" class="form-select">
+                <option value="0">All pages (auto)</option>
+                <option value="1">1 page</option>
+                <option value="3">3 pages</option>
+                <option value="5">5 pages</option>
+                <option value="10">10 pages</option>
+              </select>
+            </div>
+            <div class="col-5 mb-3">
+              <label class="form-label fw-semibold">Time <span class="text-danger">*</span></label>
+              <input name="run_at" type="time" class="form-control" required />
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary w-100">
+            <i class="bi bi-calendar-plus me-1"></i> Add schedule
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Existing schedules -->
+  <div class="col-lg-7">
+    <div class="card">
+      <div class="card-header bg-white py-3 fw-semibold">Scheduled runs</div>
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>Time</th><th>Type</th><th>Label / URL</th><th>Pages</th>
+              <th>Last run</th><th>On</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for s in schedules %}
+            <tr>
+              <td class="fw-semibold">{{ s.run_at }}</td>
+              <td>
+                {% if s.scrape_type == 'sold' %}
+                  <span class="badge badge-sold">Sold</span>
+                {% else %}
+                  <span class="badge badge-active">Newly</span>
+                {% endif %}
+              </td>
+              <td style="max-width:260px;">
+                <div class="fw-medium text-truncate">{{ s.label or '—' }}</div>
+                <div class="text-muted text-truncate" style="font-size:.72rem;">{{ s.url }}</div>
+              </td>
+              <td><span class="small">{{ 'All' if s.pages == 0 else s.pages }}</span></td>
+              <td><span class="text-muted small">{{ s.last_run or '—' }}</span></td>
+              <td>
+                <form method="post" action="/schedule/toggle/{{ s.id }}">
+                  <input type="hidden" name="enabled" value="{{ '0' if s.enabled else '1' }}" />
+                  <button class="btn btn-sm {{ 'btn-success' if s.enabled else 'btn-outline-secondary' }}" title="Toggle">
+                    {{ 'On' if s.enabled else 'Off' }}
+                  </button>
+                </form>
+              </td>
+              <td>
+                <form method="post" action="/schedule/delete/{{ s.id }}"
+                      onsubmit="return confirm('Delete this schedule?');">
+                  <button class="btn btn-sm btn-outline-danger" title="Delete">
+                    <i class="bi bi-trash"></i>
+                  </button>
+                </form>
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7" class="text-center text-muted py-5">
+              <i class="bi bi-calendar-x fs-2 d-block mb-2"></i>No schedules yet.
+            </td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

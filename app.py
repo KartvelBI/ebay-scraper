@@ -2,8 +2,15 @@ import hmac
 import json
 import os
 import threading
+import time as _time
+from datetime import datetime
 from functools import wraps
 from urllib.parse import urlparse, parse_qs, urlencode
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    ZoneInfo = None
 
 from flask import (Flask, flash, jsonify, redirect, render_template, request,
                    session, url_for)
@@ -759,6 +766,129 @@ def _bulk_save(listings: list[dict], store_name: str = None) -> int:
             except Exception as e:
                 print(f"  DB error: {e}")
         return saved
+
+
+# ---------------------------------------------------------------------------
+# Schedule tab — daily scheduled scrapes
+# ---------------------------------------------------------------------------
+
+_SCHEDULE_TYPES = {"sold", "newly"}
+
+
+@app.route("/schedule", methods=["GET", "POST"])
+@login_required
+def schedule_page():
+    if request.method == "POST":
+        url        = request.form.get("url", "").strip()
+        run_at     = request.form.get("run_at", "").strip()      # "HH:MM"
+        stype      = request.form.get("scrape_type", "sold").strip()
+        label      = request.form.get("label", "").strip() or None
+        store_name = request.form.get("store_name", "").strip() or None
+        pages      = _parse_pages(request.form)
+        if stype not in _SCHEDULE_TYPES:
+            stype = "sold"
+        if not url or not run_at:
+            flash("URL and time are required.", "error")
+            return redirect(url_for("schedule_page"))
+        try:
+            db.create_schedule({
+                "label": label, "scrape_type": stype, "url": url, "pages": pages,
+                "store_name": store_name, "run_at": run_at, "enabled": True,
+                "created_at": datetime.now(_schedule_tz()).isoformat(),
+            })
+            flash("Schedule created.", "success")
+        except Exception as exc:
+            flash(f"Could not save schedule — has the 'schedules' table been created? ({exc})", "error")
+        return redirect(url_for("schedule_page"))
+
+    try:
+        schedules = db.get_schedules()
+    except Exception as exc:
+        schedules = []
+        flash(f"Could not load schedules — create the 'schedules' table in Supabase. ({exc})", "error")
+    return render_template(
+        "schedule.html",
+        schedules=schedules,
+        tzname=os.environ.get("SCHEDULE_TZ", "Asia/Tbilisi"),
+        now_str=datetime.now(_schedule_tz()).strftime("%H:%M"),
+    )
+
+
+@app.route("/schedule/delete/<int:schedule_id>", methods=["POST"])
+@login_required
+def schedule_delete(schedule_id):
+    db.delete_schedule(schedule_id)
+    flash("Schedule deleted.", "success")
+    return redirect(url_for("schedule_page"))
+
+
+@app.route("/schedule/toggle/<int:schedule_id>", methods=["POST"])
+@login_required
+def schedule_toggle(schedule_id):
+    db.set_schedule_enabled(schedule_id, request.form.get("enabled") == "1")
+    return redirect(url_for("schedule_page"))
+
+
+# ---------------------------------------------------------------------------
+# Scheduler — background thread that fires schedules at their time
+# ---------------------------------------------------------------------------
+
+def _schedule_tz():
+    if ZoneInfo:
+        try:
+            return ZoneInfo(os.environ.get("SCHEDULE_TZ", "Asia/Tbilisi"))
+        except Exception:
+            return None
+    return None
+
+
+def _start_scheduled(s: dict) -> None:
+    raw = s.get("url") or ""
+    url = _force_active_url(raw) if s.get("scrape_type") == "newly" else _force_sold_url(raw)
+    store = (s.get("store_name") or "").strip() or None
+    pages = int(s.get("pages") or 0)
+    label = s.get("label") or s.get("scrape_type") or "scheduled"
+    _jset(running=True, done=False, task=f"Scheduled · {label}", detail=url,
+          page=0, collected=0, saved=0, log=[], error=None, stop_requested=False)
+    _jlog(f"Scheduled run '{label}' starting…")
+    threading.Thread(target=_run_url_scrape, args=(url, pages, store), daemon=True).start()
+
+
+def _check_schedules() -> None:
+    with _JOB_LOCK:
+        if _JOB.get("running"):
+            return  # never overlap with a running scrape
+    now = datetime.now(_schedule_tz())
+    hhmm, today = now.strftime("%H:%M"), now.strftime("%Y-%m-%d")
+    for s in db.get_schedules(enabled_only=True):
+        if s.get("run_at") == hhmm and s.get("last_run") != today:
+            db.set_schedule_last_run(s["id"], today)  # mark first to avoid double-fire
+            _start_scheduled(s)
+            break  # one at a time
+
+
+def _scheduler_loop() -> None:
+    while True:
+        try:
+            _check_schedules()
+        except Exception as exc:
+            print(f"  Scheduler check error: {exc}")
+        _time.sleep(30)
+
+
+_scheduler_started = False
+
+
+def _start_scheduler() -> None:
+    global _scheduler_started
+    if _scheduler_started:
+        return
+    _scheduler_started = True
+    threading.Thread(target=_scheduler_loop, daemon=True).start()
+    print("Scheduler started.")
+
+
+_start_scheduler()
 
 
 # ---------------------------------------------------------------------------

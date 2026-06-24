@@ -60,6 +60,20 @@ CREATE TABLE IF NOT EXISTS product_details (
     scraped_at              TEXT NOT NULL
 );
 
+-- Daily scheduled scrapes
+CREATE TABLE IF NOT EXISTS schedules (
+    id          BIGSERIAL PRIMARY KEY,
+    label       TEXT,
+    scrape_type TEXT NOT NULL DEFAULT 'sold',   -- 'sold' | 'newly'
+    url         TEXT NOT NULL,
+    pages       INTEGER NOT NULL DEFAULT 0,      -- 0 = all pages
+    store_name  TEXT,
+    run_at      TEXT NOT NULL,                   -- 'HH:MM' (24h)
+    enabled     BOOLEAN NOT NULL DEFAULT TRUE,
+    last_run    TEXT,                            -- 'YYYY-MM-DD' of last fire
+    created_at  TEXT
+);
+
 -- Migration: run if the tables already exist
 -- ALTER TABLE listings ADD COLUMN IF NOT EXISTS listed_date TEXT;
 -- ALTER TABLE listings ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Active';
